@@ -1,8 +1,10 @@
 {
-  "name": "gamecord",
+  "name": "turkcord",
   "version": "1.0.0",
-  "description": "Discord-like zero latency WebRTC voice and text chat",
+  "description": "TurkCord - Düşük Gecikmeli WebRTC Ses ve Sohbet Platformu",
   "scripts": {
+    "build": "npm --prefix client install && npm --prefix client run build",
+    "start": "npm --prefix server start",
     "server": "npm --prefix server start",
     "client": "npm --prefix client run dev"
   }

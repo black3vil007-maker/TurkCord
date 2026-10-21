@@ -1,5 +1,5 @@
 // TurkCord Progressive Web App Service Worker
-const CACHE_NAME = 'turkcord-v1';
+const CACHE_NAME = 'turkcord-v2';
 const PRECACHE_ASSETS = [
   '/',
   '/index.html',
