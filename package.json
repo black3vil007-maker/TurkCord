@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "TurkCord - Düşük Gecikmeli WebRTC Ses ve Sohbet Platformu",
   "scripts": {
-    "build": "npm --prefix client install && npm --prefix client run build",
+    "build": "node build.js",
     "start": "npm --prefix server start",
     "server": "npm --prefix server start",
     "client": "npm --prefix client run dev"
