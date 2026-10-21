@@ -1,21 +1,23 @@
 -- ============================================================
 -- TurkCord: Admin ve Hesap Durumu (Aktif/Pasif) Veritabanı Ayarı
 -- Supabase Panelinde SQL Editor -> New Query açıp çalıştırın.
+-- (Tekrar tekrar çalıştırılsa bile asla hata vermeyecek şekilde düzenlenmiştir)
 -- ============================================================
 
--- 1. Sütunları Ekle
+-- 1. Sütunları Ekle (Eğer yoksa)
 alter table public.profiles add column if not exists is_passive boolean default false;
 alter table public.profiles add column if not exists is_admin boolean default false;
 alter table public.profiles add column if not exists email text;
 
--- 2. aerayyoruk@gmail.com hesabını Süper Yönetici (Admin) olarak yetkilendir
+-- 2. aerayyoruk@gmail.com hesabını Süper Yönetici (Admin) olarak yetkilendir ve kullanıcı adını Admin yap
 update public.profiles 
-set is_admin = true, is_passive = false 
+set is_admin = true, is_passive = false, username = 'Admin', email = 'aerayyoruk@gmail.com'
 where id in (select id from auth.users where lower(email) = 'aerayyoruk@gmail.com');
 
--- 3. Admin'in tüm kullanıcıları pasife/aktife çekebilmesi için RLS Güncellemesi
+-- 3. RLS Güncellemesi (Önceki politikaları güvenle sil ve yenisini kur)
 drop policy if exists "Kullanıcılar kendi profilini güncelleyebilir" on public.profiles;
 drop policy if exists "Admin her profili guncelleyebilir" on public.profiles;
+drop policy if exists "Kullanıcılar ve Admin profilleri güncelleyebilir" on public.profiles;
 
 create policy "Kullanıcılar ve Admin profilleri güncelleyebilir"
 on public.profiles for update
@@ -25,12 +27,15 @@ using (
   exists (select 1 from public.profiles where id = auth.uid() and is_admin = true)
 );
 
--- Realtime değişiklikleri için publication'a profiles tablosunu dahil et
-alter publication supabase_realtime add table public.profiles;
+-- 4. Realtime yayınına profiles tablosunu dahil et (Hata vermeyecek güvenli blok)
+do $$ 
+begin 
+  alter publication supabase_realtime add table public.profiles; 
+exception 
+  when duplicate_object then null; 
+end $$;
 
--- ============================================================
--- 4. 'admin' kullanıcı adını sadece aerayyoruk@gmail.com alabilir
--- ============================================================
+-- 5. 'admin' kullanıcı adını sadece aerayyoruk@gmail.com alabilir
 create or replace function public.check_admin_username_reservation()
 returns trigger as $$
 declare
@@ -50,4 +55,3 @@ drop trigger if exists tr_check_admin_username on public.profiles;
 create trigger tr_check_admin_username
 before insert or update of username on public.profiles
 for each row execute function public.check_admin_username_reservation();
-
