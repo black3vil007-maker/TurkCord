@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { 
   X, Mic, Volume2, ShieldCheck, Zap, Sliders, Check, 
-  VolumeX, SlidersHorizontal, Radio, Sparkles, User, AudioWaveform 
+  VolumeX, SlidersHorizontal, Radio, Sparkles, User, AudioWaveform, Bell 
 } from 'lucide-react';
 import { webrtc } from '../services/webrtc';
+import { soundEffects } from '../services/soundEffects';
 
 const AVATARS = ['🎮', '⚡', '🚀', '🔥', '👾', '🎯', '🐱', '🦊', '🐉', '🎧', '🕹️', '🍕'];
 
@@ -16,6 +17,7 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser }) {
 
   // Audio settings state loaded from webrtc
   const [audioSettings, setAudioSettings] = useState(() => webrtc.loadAudioSettings());
+  const [soundEnabled, setSoundEnabled] = useState(() => soundEffects.isEnabled);
 
   useEffect(() => {
     return () => {
@@ -369,6 +371,51 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser }) {
                     className="w-5 h-5 accent-indigo-600 rounded cursor-pointer"
                   />
                 </div>
+              </div>
+
+              {/* Oda Bildirim & Giriş/Çıkış Sesleri */}
+              <div className="bg-[#21262d] p-4 rounded-2xl border border-[#30363d] space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="pr-4">
+                    <div className="text-xs font-bold text-white flex items-center space-x-1.5">
+                      <Bell className="w-4 h-4 text-emerald-400" />
+                      <span>Oda Bildirim Sesleri (Chime)</span>
+                    </div>
+                    <p className="text-[11px] text-[#7d8590] mt-0.5">
+                      Odaya sen girdiğinde veya bir arkadaşın odaya katıldığında özel bildirim sesi çalar.
+                    </p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={soundEnabled}
+                    onChange={(e) => {
+                      const val = e.target.checked;
+                      setSoundEnabled(val);
+                      soundEffects.setEnabled(val);
+                      if (val) soundEffects.playUserJoined();
+                    }}
+                    className="w-5 h-5 accent-indigo-600 rounded cursor-pointer"
+                  />
+                </div>
+
+                {soundEnabled && (
+                  <div className="pt-2 border-t border-[#30363d]/60 flex items-center space-x-2">
+                    <button
+                      type="button"
+                      onClick={() => soundEffects.playSelfJoin()}
+                      className="flex-1 py-1.5 px-3 rounded-xl bg-[#0d1117] hover:bg-[#161b22] text-[#c9d1d9] hover:text-white border border-[#30363d] text-[11px] font-bold transition flex items-center justify-center space-x-1.5 shadow-sm"
+                    >
+                      <span>🎵 Odaya Giriş Sesini Dinle</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => soundEffects.playUserJoined()}
+                      className="flex-1 py-1.5 px-3 rounded-xl bg-[#0d1117] hover:bg-[#161b22] text-[#c9d1d9] hover:text-white border border-[#30363d] text-[11px] font-bold transition flex items-center justify-center space-x-1.5 shadow-sm"
+                    >
+                      <span>🔔 Biri Katılma Sesini Dinle</span>
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}

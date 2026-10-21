@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { socket } from './services/socket';
 import { webrtc } from './services/webrtc';
 import { supabase } from './services/supabase';
+import { soundEffects } from './services/soundEffects';
 import { 
   Volume2, 
   Hash, 
@@ -52,6 +53,15 @@ export default function App() {
   const [endedBroadcast, setEndedBroadcast] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [livePing, setLivePing] = useState(12);
+  const [roomEventToast, setRoomEventToast] = useState(null);
+
+  // References to track room members and trigger join/leave sounds
+  const activeVoiceChannelRef = useRef(activeVoiceChannel);
+  const prevRoomMembersRef = useRef(new Set());
+
+  useEffect(() => {
+    activeVoiceChannelRef.current = activeVoiceChannel;
+  }, [activeVoiceChannel]);
 
   // Create room modal / form state
   const [showCreateRoom, setShowCreateRoom] = useState(false);
@@ -294,6 +304,45 @@ export default function App() {
       if (onlineUsers && onlineUsers.length > 0) {
         setAllUsers(onlineUsers);
       }
+
+      // Check if someone joined or left our active voice room
+      const activeRoom = activeVoiceChannelRef.current;
+      if (activeRoom) {
+        const currentMembers = rooms[activeRoom] || [];
+        const currentIds = new Set(currentMembers.map(u => u.id));
+        const prevIds = prevRoomMembersRef.current;
+
+        if (prevIds && prevIds.size > 0) {
+          // Check for incoming members
+          currentMembers.forEach(user => {
+            if (!prevIds.has(user.id) && user.id !== currentUser?.id) {
+              soundEffects.playUserJoined();
+              setRoomEventToast({
+                type: 'join',
+                text: `${user.username || 'Birisi'} odaya katıldı 👋`
+              });
+              setTimeout(() => setRoomEventToast(null), 3500);
+            }
+          });
+
+          // Check for departing members
+          prevIds.forEach(prevId => {
+            if (!currentIds.has(prevId) && prevId !== currentUser?.id) {
+              soundEffects.playUserLeft();
+              const leftUser = (onlineUsers || []).find(u => u.id === prevId);
+              if (leftUser) {
+                setRoomEventToast({
+                  type: 'leave',
+                  text: `${leftUser.username} odadan ayrıldı`
+                });
+                setTimeout(() => setRoomEventToast(null), 3500);
+              }
+            }
+          });
+        }
+
+        prevRoomMembersRef.current = currentIds;
+      }
     };
 
     realtimeSignaling.onOffer = async (fromId, offer) => {
@@ -470,12 +519,16 @@ export default function App() {
 
     socket.on('voice:user-joined', async ({ roomId, peer }) => {
       if (peer && peer.id && peer.id !== socket.id) {
+        if (activeVoiceChannelRef.current === roomId) {
+          soundEffects.playUserJoined();
+        }
         await webrtc.createPeerConnection(peer.id, false);
       }
     });
 
     socket.on('voice:user-left', ({ peerId }) => {
       webrtc.closePeer(peerId);
+      soundEffects.playUserLeft();
       setSpeakingUsers(prev => {
         const copy = { ...prev };
         delete copy[peerId];
@@ -553,6 +606,14 @@ export default function App() {
       return;
     }
     try {
+      soundEffects.playSelfJoin();
+
+      // Seed initial room members so we don't trigger "user joined" for existing occupants
+      const existingInRoom = voiceRooms[roomId] || [];
+      const initialIds = new Set(existingInRoom.map(u => u.id));
+      if (currentUser?.id) initialIds.add(currentUser.id);
+      prevRoomMembersRef.current = initialIds;
+
       await webrtc.initLocalAudio();
       setActiveVoiceChannel(roomId);
       setActiveTab('voice');
@@ -579,6 +640,8 @@ export default function App() {
   };
 
   const handleLeaveVoice = () => {
+    soundEffects.playSelfLeave();
+    prevRoomMembersRef.current = new Set();
     webrtc.leaveRoom();
     setActiveVoiceChannel(null);
     setIsScreenSharing(false);
@@ -958,6 +1021,23 @@ export default function App() {
             >
               <X className="w-4 h-4" />
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Odaya Biri Katıldı / Ayrıldı Toast Bildirimi */}
+      {roomEventToast && (
+        <div className="absolute top-5 right-5 z-50 bg-[#161b22] border-2 border-emerald-500/50 rounded-2xl px-4 py-3 shadow-2xl flex items-center space-x-3 animate-in fade-in slide-in-from-top-3 duration-200">
+          <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-lg">
+            {roomEventToast.type === 'join' ? '👋' : '🚪'}
+          </div>
+          <div>
+            <div className="text-xs font-bold text-white">
+              {roomEventToast.text}
+            </div>
+            <div className="text-[10px] text-[#7d8590]">
+              Ses Odası Bildirimi
+            </div>
           </div>
         </div>
       )}
