@@ -856,60 +856,66 @@ export default function App() {
 
       // Check if someone joined or left our active voice room
       const activeRoom = activeVoiceChannelRef.current;
-      if (activeRoom) {
+      if (activeRoom && currentUser?.id) {
         const currentMembers = rooms[activeRoom] || [];
         const currentIds = new Set(currentMembers.map(u => u.id));
-        const prevIds = prevRoomMembersRef.current;
+        const prevIds = prevRoomMembersRef.current || new Set();
 
-        if (prevIds && prevIds.size > 0) {
-          // Check for incoming members
-          currentMembers.forEach(async (user) => {
-            if (!prevIds.has(user.id) && user.id !== currentUser?.id) {
-              soundEffects.playUserJoined();
+        // 1. Toast / audio sound effect for newcomers
+        currentMembers.forEach((user) => {
+          if (prevIds.size > 0 && !prevIds.has(user.id) && user.id !== currentUser.id) {
+            soundEffects.playUserJoined();
+            setRoomEventToast({
+              type: 'join',
+              text: `${user.username || 'Birisi'} odaya katıldı 👋`,
+              user: user
+            });
+            setTimeout(() => setRoomEventToast(null), 4500);
+          }
+        });
+
+        // 2. Toast / audio sound effect for departing members
+        prevIds.forEach(prevId => {
+          if (!currentIds.has(prevId) && prevId !== currentUser.id) {
+            soundEffects.playUserLeft();
+            webrtc.closePeer(prevId);
+            setPeers({ ...webrtc.peers });
+
+            const leftUser = (onlineUsers || []).find(u => u.id === prevId);
+            if (leftUser) {
               setRoomEventToast({
-                type: 'join',
-                text: `${user.username || 'Birisi'} odaya katıldı 👋`,
-                user: user
+                type: 'leave',
+                text: `${leftUser.username} odadan ayrıldı`
               });
-              setTimeout(() => setRoomEventToast(null), 4500);
-
-              // If an old stale connection is in bad state, purge it
-              if (webrtc.peers[user.id] && ['disconnected', 'failed', 'closed'].includes(webrtc.peers[user.id].connection?.connectionState)) {
-                webrtc.closePeer(user.id);
-              }
-
-              // Connect to the incoming member if not already connected
-              if (!webrtc.peers[user.id]) {
-                const amIInitiator = (currentUser?.id || '') > (user.id || '');
-                if (amIInitiator) {
-                  console.log('[WebRTC] Establishing connection with newcomer:', user.username, user.id);
-                  await webrtc.createPeerConnection(user.id, true);
-                }
-              }
+              setTimeout(() => setRoomEventToast(null), 3500);
             }
-          });
+          }
+        });
 
-          // Check for departing members
-          prevIds.forEach(prevId => {
-            if (!currentIds.has(prevId) && prevId !== currentUser?.id) {
-              soundEffects.playUserLeft();
-              // Immediately disconnect and cleanup WebRTC connection for departed member
-              webrtc.closePeer(prevId);
-              setPeers({ ...webrtc.peers });
+        prevRoomMembersRef.current = currentIds;
 
-              const leftUser = (onlineUsers || []).find(u => u.id === prevId);
-              if (leftUser) {
-                setRoomEventToast({
-                  type: 'leave',
-                  text: `${leftUser.username} odadan ayrıldı`
-                });
-                setTimeout(() => setRoomEventToast(null), 3500);
+        // 3. DETERMINISTIC WEBRTC MESH CONNECTION:
+        // When not on dedicated Socket.io (e.g. Vercel cloud deployment), establish connection to every other member in room.
+        // Rule: User with larger UUID is the designated initiator. This strictly prevents collisions and race conditions.
+        if (!socket || !socket.connected) {
+          currentMembers.forEach(async (member) => {
+            if (member && member.id && member.id !== currentUser.id) {
+              const amIInitiator = String(currentUser.id) > String(member.id);
+              const peerObj = webrtc.peers[member.id];
+              const connState = peerObj?.connection?.connectionState;
+              const isAlive = peerObj && (connState === 'connected' || connState === 'connecting');
+
+              if (peerObj && ['failed', 'closed', 'disconnected'].includes(connState)) {
+                webrtc.closePeer(member.id);
+              }
+
+              if (amIInitiator && !isAlive) {
+                console.log('[WebRTC Mesh] Initiating audio connection with room peer:', member.username, member.id);
+                await webrtc.createPeerConnection(member.id, true);
               }
             }
           });
         }
-
-        prevRoomMembersRef.current = currentIds;
       }
     };
 
@@ -1367,17 +1373,6 @@ export default function App() {
       // 2. Ses odası bağlantısı: Socket.io aktifse Socket sinyali üzerinden peers listesiyle tekil bağlantı kurulur
       if (socket && socket.connected) {
         socket.emit('voice:join', { roomId, user: currentUser });
-      } else {
-        // Yalnızca Socket sunucusu yoksa (Vercel serverless fallback) Realtime döngüsüyle bağlan
-        for (const p of currentOccupants) {
-          if (p.id && p.id !== currentUser?.id) {
-            console.log('[WebRTC Fallback] Calling existing peer via Realtime:', p.username, p.id);
-            if (webrtc.peers[p.id]) {
-              webrtc.closePeer(p.id);
-            }
-            await webrtc.createPeerConnection(p.id, true);
-          }
-        }
       }
     } catch (err) {
       console.error('[Voice] Error joining room:', err);

@@ -44,19 +44,19 @@ class RealtimeSignaling {
 
     // 2. Broadcast events for WebRTC signaling
     this.channel.on('broadcast', { event: 'webrtc:offer' }, ({ payload }) => {
-      if (payload && payload.to === this.currentUser?.id) {
+      if (payload && String(payload.to) === String(this.currentUser?.id)) {
         if (this.onOffer) this.onOffer(payload.from, payload.offer);
       }
     });
 
     this.channel.on('broadcast', { event: 'webrtc:answer' }, ({ payload }) => {
-      if (payload && payload.to === this.currentUser?.id) {
+      if (payload && String(payload.to) === String(this.currentUser?.id)) {
         if (this.onAnswer) this.onAnswer(payload.from, payload.answer);
       }
     });
 
     this.channel.on('broadcast', { event: 'webrtc:ice-candidate' }, ({ payload }) => {
-      if (payload && payload.to === this.currentUser?.id) {
+      if (payload && String(payload.to) === String(this.currentUser?.id)) {
         if (this.onCandidate) this.onCandidate(payload.from, payload.candidate);
       }
     });

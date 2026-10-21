@@ -1,6 +1,6 @@
 {
   "name": "turkcord-desktop",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "TurkCord - eSports Düşük Gecikmeli WebRTC Ses ve Sohbet Masaüstü Uygulaması",
   "main": "main.js",
   "author": "TurkCord Team",

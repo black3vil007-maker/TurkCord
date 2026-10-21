@@ -7,11 +7,10 @@ const ICE_SERVERS = {
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
     { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' }
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' }
   ],
-  bundlePolicy: 'max-bundle',
-  rtcpMuxPolicy: 'require',
-  iceCandidatePoolSize: 2
+  iceCandidatePoolSize: 10
 };
 
 class WebRTCManager {
@@ -74,23 +73,14 @@ class WebRTCManager {
   }
 
   updateAllPeerPlayoutVolumes() {
-    const isWebAudioActive = this.remoteAudioContext && this.remoteAudioContext.state === 'running';
-    for (const [peerId, gainNode] of Object.entries(this.peerGainNodes)) {
-      const effective = this.getEffectivePeerVolume(peerId);
-      gainNode.gain.value = this.isDeafened ? 0 : (effective / 100);
-    }
     for (const [peerId, peer] of Object.entries(this.peers)) {
       if (peer.audioEl) {
         if (this.isDeafened) {
           peer.audioEl.muted = true;
+          peer.audioEl.volume = 0;
         } else {
-          // Keep audioEl muted if Web Audio is active to eliminate double-play echo!
-          if (isWebAudioActive && this.peerGainNodes[peerId]) {
-            peer.audioEl.muted = true;
-          } else {
-            peer.audioEl.muted = false;
-            peer.audioEl.volume = Math.min(1.0, this.getEffectivePeerVolume(peerId) / 100);
-          }
+          peer.audioEl.muted = false;
+          peer.audioEl.volume = Math.min(1.0, Math.max(0, this.getEffectivePeerVolume(peerId) / 100));
         }
       }
     }
@@ -163,7 +153,6 @@ class WebRTCManager {
 
   setupPeerAudio(peerId, remoteStream) {
     if (!remoteStream) return;
-    const effectiveVol = this.getEffectivePeerVolume(peerId);
     const peer = this.peers[peerId];
     if (!peer) return;
 
@@ -179,45 +168,29 @@ class WebRTCManager {
       peer.audioEl = audioEl;
     }
 
-    // Set stream and initial volume directly on audioEl
-    audioEl.srcObject = remoteStream;
+    // 2. Set stream directly
+    if (audioEl.srcObject !== remoteStream) {
+      audioEl.srcObject = remoteStream;
+    }
+
+    // 3. Audio volume & unmuted - Never mute unless user is intentionally deafened!
+    const effectiveVol = this.getEffectivePeerVolume(peerId);
     audioEl.volume = this.isDeafened ? 0 : Math.min(1.0, Math.max(0, effectiveVol / 100));
+    audioEl.muted = Boolean(this.isDeafened);
 
-    // Default to unmuted so voice is ALWAYS audible natively even if AudioContext is suspended
-    audioEl.muted = this.isDeafened;
-    audioEl.play().catch(e => {
-      console.warn('[WebRTC] audioEl waiting for interaction:', e);
-    });
-
-    // 2. Try routing through Web Audio gain node if AudioContext is active
-    try {
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (!this.remoteAudioContext || this.remoteAudioContext.state === 'closed') {
-        this.remoteAudioContext = new AudioCtx();
-      }
-      if (this.remoteAudioContext.state === 'suspended') {
-        this.remoteAudioContext.resume().catch(() => {});
-      }
-
-      if (this.remoteAudioContext.state === 'running') {
-        if (this.peerGainNodes[peerId]) {
-          try { this.peerGainNodes[peerId].disconnect(); } catch (e) {}
-        }
-
-        const source = this.remoteAudioContext.createMediaStreamSource(remoteStream);
-        const gainNode = this.remoteAudioContext.createGain();
-        gainNode.gain.value = this.isDeafened ? 0 : (effectiveVol / 100);
-
-        source.connect(gainNode);
-        gainNode.connect(this.remoteAudioContext.destination);
-        this.peerGainNodes[peerId] = gainNode;
-
-        // Since Web Audio is actively streaming to speakers, mute audioEl to prevent duplicate echo
-        audioEl.muted = true;
-      }
-    } catch (e) {
-      console.warn('[WebRTC] Web Audio peer gain fallback to HTMLAudioElement:', e);
-      audioEl.muted = this.isDeafened;
+    // 4. Force play
+    const playPromise = audioEl.play();
+    if (playPromise !== undefined) {
+      playPromise.catch(e => {
+        console.warn(`[WebRTC] audioEl autoplay waiting for user interaction for ${peerId}:`, e);
+        const unlock = () => {
+          audioEl.play().catch(() => {});
+          window.removeEventListener('click', unlock);
+          window.removeEventListener('keydown', unlock);
+        };
+        window.addEventListener('click', unlock, { once: true });
+        window.addEventListener('keydown', unlock, { once: true });
+      });
     }
   }
 
@@ -308,108 +281,67 @@ class WebRTCManager {
 
   // Initialize local microphone with studio DSP pipeline (cuts mechanical keyboard noise 100%)
   async initLocalAudio() {
-    if (this.localStream) return this.localStream;
+    if (this.localStream && this.localStream.getAudioTracks().length > 0 && this.localStream.getAudioTracks()[0].readyState === 'live') {
+      return this.localStream;
+    }
 
     try {
       this.rawStream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: Boolean(this.audioSettings.echoCancellation),
-          noiseSuppression: Boolean(this.audioSettings.noiseSuppression),
-          autoGainControl: Boolean(this.audioSettings.autoGainControl),
-          googEchoCancellation: Boolean(this.audioSettings.echoCancellation),
-          googNoiseSuppression: Boolean(this.audioSettings.noiseSuppression),
-          googHighpassFilter: true,
-          googTypingNoiseDetection: true,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
           channelCount: 1,
-          sampleRate: 48000,
-          sampleSize: 16,
-          latency: 0.005
+          sampleRate: 48000
         },
         video: false
       });
 
-      const rawAudioTrack = this.rawStream.getAudioTracks()[0];
-      if (rawAudioTrack && 'contentHint' in rawAudioTrack) {
-        rawAudioTrack.contentHint = 'speech';
+      this.localStream = this.rawStream;
+
+      const track = this.localStream.getAudioTracks()[0];
+      if (track) {
+        track.enabled = !this.isMuted;
+        if ('contentHint' in track) {
+          track.contentHint = 'speech';
+        }
       }
 
-      // Initialize Web Audio DSP Processing Graph
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (this.audioContext && this.audioContext.state !== 'closed') {
-        try { this.audioContext.close(); } catch (e) {}
-      }
-      this.audioContext = new AudioCtx({ sampleRate: 48000 });
-
-      const source = this.audioContext.createMediaStreamSource(this.rawStream);
-
-      // 1. Analyser connected to raw stream so it ALWAYS detects voice accurately
-      this.analyser = this.audioContext.createAnalyser();
-      this.analyser.fftSize = 512;
-      this.analyser.smoothingTimeConstant = 0.2;
-      source.connect(this.analyser);
-
-      // 2. High-pass Filter (140Hz): Cuts mechanical switch bottom-out thumps and desk vibrations
-      this.highpassFilter = this.audioContext.createBiquadFilter();
-      this.highpassFilter.type = 'highpass';
-      this.highpassFilter.frequency.value = this.audioSettings.keyboardFilterEnabled !== false ? 140 : 20;
-      this.highpassFilter.Q.value = 0.7;
-
-      // 3. High-shelf Click Filter (4000Hz): Suppresses sharp metallic switch clatter
-      this.keyboardFilterShelf = this.audioContext.createBiquadFilter();
-      this.keyboardFilterShelf.type = 'highshelf';
-      this.keyboardFilterShelf.frequency.value = 4000;
-      this.keyboardFilterShelf.gain.value = this.audioSettings.keyboardFilterEnabled !== false ? -18 : 0;
-
-      // 4. Master Microphone Input Volume Controller (0% to 200%)
-      this.micGainNode = this.audioContext.createGain();
-      this.micGainNode.gain.setValueAtTime(this.inputVolume / 100, this.audioContext.currentTime);
-
-      // 5. Hardware Voice Gate: zeros audio volume to 0 during typing/silence
-      this.gateGainNode = this.audioContext.createGain();
-      this.gateGainNode.gain.setValueAtTime(0, this.audioContext.currentTime);
-
-      // 6. Output Destination for WebRTC transmission
-      this.audioDestination = this.audioContext.createMediaStreamDestination();
-
-      // Pipeline: Source -> Highpass (Desk rumble cut) -> Highshelf (Switch click cut) -> Mic Gain -> Voice Gate -> Destination
-      source.connect(this.highpassFilter);
-      this.highpassFilter.connect(this.keyboardFilterShelf);
-      this.keyboardFilterShelf.connect(this.micGainNode);
-      this.micGainNode.connect(this.gateGainNode);
-      this.gateGainNode.connect(this.audioDestination);
-
-      this.processedStream = this.audioDestination.stream;
-      this.localStream = this.processedStream;
-
-      const processedTrack = this.localStream.getAudioTracks()[0];
-      if (processedTrack && 'contentHint' in processedTrack) {
-        processedTrack.contentHint = 'speech';
+      // Initialize Web Audio Analyser ONLY for speaking indicator / avatar glow
+      try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!this.audioContext || this.audioContext.state === 'closed') {
+          this.audioContext = new AudioCtx({ sampleRate: 48000 });
+        }
+        if (this.audioContext.state === 'suspended') {
+          this.audioContext.resume().catch(() => {});
+        }
+        const source = this.audioContext.createMediaStreamSource(this.rawStream);
+        this.analyser = this.audioContext.createAnalyser();
+        this.analyser.fftSize = 512;
+        this.analyser.smoothingTimeConstant = 0.2;
+        source.connect(this.analyser);
+      } catch (e) {
+        console.warn('[WebRTC] Analyser setup error:', e);
       }
 
       this.setupVAD();
       return this.localStream;
     } catch (err) {
-      console.warn('[WebRTC] Custom DSP initialization failed, falling back:', err);
-      try {
-        this.rawStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        this.localStream = this.rawStream;
-        return this.localStream;
-      } catch (e) {
-        console.error('[WebRTC] Microphone access error:', e);
-        throw err;
-      }
+      console.error('[WebRTC] Microphone access error:', err);
+      throw err;
     }
   }
 
-  // Optimize SDP specifically for Gaming: 10ms Opus packets, FEC, 64kbps CBR, DTX + 8Mbps Crisp Screen Share
+  // Optimize SDP specifically for Gaming: Opus Audio with inband FEC & Crisp Screen Share
   optimizeSdpForGaming(sdp) {
     if (!sdp) return sdp;
 
-    // 1. Opus Audio Optimization with usedtx=1 (suppresses silence packets when gate is closed)
+    // 1. Opus Audio Optimization (Forward Error Correction enabled, continuous voice)
     const opusMatch = sdp.match(/a=rtpmap:(\d+)\s+opus\/48000/i);
     if (opusMatch) {
       const opusPayload = opusMatch[1];
-      const gamingParams = 'minptime=10;ptime=10;maxaveragebitrate=64000;stereo=0;sprop-stereo=0;cbr=1;useinbandfec=1;usedtx=1';
+      const gamingParams = 'maxaveragebitrate=64000;stereo=1;sprop-stereo=1;useinbandfec=1;usedtx=0';
 
       const fmtpRegex = new RegExp(`a=fmtp:${opusPayload}\\s+(.*)`, 'i');
       if (fmtpRegex.test(sdp)) {
@@ -466,7 +398,7 @@ class WebRTCManager {
     }
   }
 
-  // Web Audio DSP Formant Gate Loop (completely eliminates mechanical keyboard noise)
+  // Visual Speaking Detection (for avatar glow & UI indicator)
   setupVAD() {
     if (this.vadInterval) {
       clearInterval(this.vadInterval);
@@ -481,9 +413,6 @@ class WebRTCManager {
 
     this.vadInterval = setInterval(() => {
       if (this.isMuted || !this.rawStream) {
-        if (this.gateGainNode && this.audioContext) {
-          this.gateGainNode.gain.setTargetAtTime(0, this.audioContext.currentTime, 0.01);
-        }
         if (wasSpeaking) {
           wasSpeaking = false;
           if (this.onSpeakingChange) this.onSpeakingChange('self', false);
@@ -494,69 +423,19 @@ class WebRTCManager {
 
       this.analyser.getByteFrequencyData(dataArray);
 
-      // Measure human voice formant energy (approx 350Hz - 3000Hz, bins 4 to 32)
-      // This mathematically isolates human vocal cord formants from mechanical keyboard switch transients
       let sum = 0;
-      let count = 0;
-      for (let i = 4; i <= 32; i++) {
+      for (let i = 0; i < dataArray.length; i++) {
         sum += dataArray[i];
-        count++;
       }
-      const voiceEnergy = count > 0 ? (sum / count) : 0;
-      const currentLevel = Math.min(100, Math.round(voiceEnergy * 1.5));
-
-      // Measure high-frequency switch clatter (>4000Hz)
-      let clickSum = 0;
-      let clickCount = 0;
-      for (let i = 42; i <= 85; i++) {
-        clickSum += dataArray[i];
-        clickCount++;
-      }
-      const clickEnergy = clickCount > 0 ? (clickSum / clickCount) : 0;
-      const isMechanicalClick = this.audioSettings.keyboardFilterEnabled !== false && clickEnergy > 32 && clickEnergy > (voiceEnergy * 1.4);
-
-      const threshold = this.audioSettings.voiceGateEnabled 
-        ? (this.audioSettings.voiceGateThreshold || 22)
-        : 0;
-
-      const isSpeaking = currentLevel >= threshold && !isMechanicalClick;
-
-      if (this.audioSettings.voiceGateEnabled && this.gateGainNode && this.audioContext) {
-        if (isSpeaking) {
-          if (this.voiceGateHangTimeout) {
-            clearTimeout(this.voiceGateHangTimeout);
-            this.voiceGateHangTimeout = null;
-          }
-          // Instant 5ms smooth attack (voice active - opens gate)
-          this.gateGainNode.gain.setTargetAtTime(1.0, this.audioContext.currentTime, 0.005);
-          this.isGateOpen = true;
-        } else if (this.isGateOpen) {
-          // 250ms release hang-time to keep words natural without choppy syllable ends
-          if (!this.voiceGateHangTimeout) {
-            this.voiceGateHangTimeout = setTimeout(() => {
-              if (this.gateGainNode && this.audioContext) {
-                // Smooth 20ms fade to pure digital silence (zero keyboard clicks transmitted)
-                this.gateGainNode.gain.setTargetAtTime(0, this.audioContext.currentTime, 0.02);
-              }
-              this.isGateOpen = false;
-              this.voiceGateHangTimeout = null;
-            }, 250);
-          }
-        } else {
-          // Below threshold: guaranteed silent
-          this.gateGainNode.gain.setTargetAtTime(0, this.audioContext.currentTime, 0.01);
-        }
-      } else if (this.gateGainNode && this.audioContext) {
-        // Gate disabled: pass 100%
-        this.gateGainNode.gain.setTargetAtTime(1.0, this.audioContext.currentTime, 0.01);
-      }
+      const avg = sum / dataArray.length;
+      const isSpeaking = avg > 8; // Gentle speaking threshold for avatar glow
 
       if (isSpeaking !== wasSpeaking) {
         wasSpeaking = isSpeaking;
         if (this.onSpeakingChange) this.onSpeakingChange('self', isSpeaking);
         this.sendSignal('voice:speaking', { isSpeaking });
       }
-    }, 40);
+    }, 50);
   }
 
   // Connect to an existing peer (Caller initiates offer)
@@ -645,8 +524,8 @@ class WebRTCManager {
         });
       }
 
-      // If audio track, route through individual volume gain controller & ensure native play
-      if (event.track && event.track.kind === 'audio') {
+      // If audio track, ensure native audio element playback
+      if ((event.track && event.track.kind === 'audio') || remoteStream.getAudioTracks().length > 0) {
         this.setupPeerAudio(peerId, remoteStream);
       }
 
@@ -669,6 +548,7 @@ class WebRTCManager {
 
     // Handle connection state changes
     pc.onconnectionstatechange = () => {
+      console.log(`[WebRTC] Peer ${peerId} connectionState:`, pc.connectionState);
       if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
         this.closePeer(peerId);
       }
@@ -699,6 +579,14 @@ class WebRTCManager {
 
   // Handle incoming Offer from a peer with collision handling and candidate buffer flush
   async handleOffer(peerId, offer) {
+    if (!this.localStream) {
+      try {
+        await this.initLocalAudio();
+      } catch (e) {
+        console.warn('[WebRTC] handleOffer initLocalAudio error:', e);
+      }
+    }
+
     let peer = this.peers[peerId];
     let pc;
     if (!peer || (peer.connection && ['closed', 'failed', 'disconnected'].includes(peer.connection.connectionState))) {
@@ -706,6 +594,16 @@ class WebRTCManager {
       pc = await this.createPeerConnection(peerId, false);
     } else {
       pc = peer.connection;
+    }
+
+    // Ensure our local audio tracks are attached to pc
+    if (this.localStream && pc) {
+      const senders = pc.getSenders();
+      this.localStream.getAudioTracks().forEach(track => {
+        if (!senders.some(s => s.track && s.track.id === track.id)) {
+          pc.addTrack(track, this.localStream);
+        }
+      });
     }
 
     try {
