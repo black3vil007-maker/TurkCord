@@ -98,7 +98,34 @@ create policy "Kullanıcılar daveti güncelleyebilir"
 on public.room_invites for update 
 using (auth.uid() = to_user_id);
 
--- 5. REALTIME (CANLI BİLDİRİM) AKTİFLEŞTİRME
--- room_invites ve friendships tablolarına realtime yayın ekle
+-- 5. SES ODALARI TABLOSU (Kayıtlı ve Kalıcı Odalar)
+create table if not exists public.voice_rooms (
+  id text primary key,
+  name text not null,
+  limit_count integer default 5,
+  created_by uuid references public.profiles(id) on delete set null,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+alter table public.voice_rooms enable row level security;
+
+create policy "Herkes odaları görebilir" 
+on public.voice_rooms for select using (true);
+
+create policy "Giriş yapanlar oda oluşturabilir" 
+on public.voice_rooms for insert with check (auth.uid() is not null);
+
+create policy "Oda sahibi silebilir" 
+on public.voice_rooms for delete using (auth.uid() = created_by);
+
+insert into public.voice_rooms (id, name, limit_count) values
+  ('voice-lobi', 'Lobi', 10),
+  ('voice-oyun-1', 'Oyun Odası #1 (Squad)', 5),
+  ('voice-oyun-2', 'Oyun Odası #2 (Duo)', 2),
+  ('voice-muhabbet', 'Sessiz / Chill', 8)
+on conflict (id) do nothing;
+
+-- 6. REALTIME (CANLI BİLDİRİM) AKTİFLEŞTİRME
 alter publication supabase_realtime add table public.friendships;
 alter publication supabase_realtime add table public.room_invites;
+alter publication supabase_realtime add table public.voice_rooms;

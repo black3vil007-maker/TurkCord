@@ -38,17 +38,25 @@ export default function AuthModal({ onAuthSuccess }) {
       }
 
       // Fetch profile
-      const { data: profile } = await supabase
+      let { data: profile } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', data.user.id)
         .single();
 
+      // Ensure user has a unique 10-digit code
+      let userCode = profile?.user_code;
+      if (!userCode) {
+        userCode = Math.floor(1000000000 + Math.random() * 9000000000).toString();
+        await supabase.from('profiles').update({ user_code: userCode }).eq('id', data.user.id);
+      }
+
       onAuthSuccess({
         id: data.user.id,
         email: data.user.email,
         username: profile?.username || data.user.user_metadata?.username || email.split('@')[0],
-        avatar: profile?.avatar || data.user.user_metadata?.avatar || '🎮'
+        avatar: profile?.avatar || data.user.user_metadata?.avatar || '🎮',
+        user_code: userCode
       });
     } catch (err) {
       setErrorMsg(err.message || 'Giriş yapılamadı.');
@@ -92,11 +100,18 @@ export default function AuthModal({ onAuthSuccess }) {
         setSuccessNotice('📩 Onay e-postası gönderildi! Lütfen gelen kutunuzu (ve spam klasörünü) kontrol edip onay bağlantısına tıklayın. Ardından giriş yapabilirsiniz.');
         setMode('confirmed_notice');
       } else if (data.session) {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', data.user.id)
+          .single();
+
         onAuthSuccess({
           id: data.user.id,
           email: data.user.email,
-          username: username.trim(),
-          avatar: avatar
+          username: profile?.username || username.trim(),
+          avatar: profile?.avatar || avatar,
+          user_code: profile?.user_code || Math.floor(1000000000 + Math.random() * 9000000000).toString()
         });
       }
     } catch (err) {

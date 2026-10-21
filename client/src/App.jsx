@@ -81,21 +81,26 @@ export default function App() {
 
   const loadUserProfile = async (user) => {
     try {
-      const { data: profile } = await supabase
+      let { data: profile } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', user.id)
         .single();
 
-      // Deterministic 10-digit code fallback
-      const generatedCode = profile?.user_code || Math.abs(hashCode(user.id)).toString().padStart(10, '0').slice(0, 10);
+      let userCode = profile?.user_code;
+      if (!userCode) {
+        userCode = Math.floor(1000000000 + Math.random() * 9000000000).toString();
+        try {
+          await supabase.from('profiles').update({ user_code: userCode }).eq('id', user.id);
+        } catch (e) {}
+      }
 
       const userObj = {
         id: user.id,
         email: user.email,
         username: profile?.username || user.user_metadata?.username || user.email.split('@')[0],
         avatar: profile?.avatar || user.user_metadata?.avatar || '🎮',
-        user_code: generatedCode
+        user_code: userCode
       };
 
       setCurrentUser(userObj);
@@ -106,6 +111,49 @@ export default function App() {
       console.warn('Profile load err:', e);
     }
   };
+
+  // 2. Load and listen for persistent voice rooms from Supabase
+  const loadVoiceRooms = async () => {
+    try {
+      const { data: dbRooms } = await supabase
+        .from('voice_rooms')
+        .select('*')
+        .order('created_at', { ascending: true });
+
+      if (dbRooms && dbRooms.length > 0) {
+        setChannels(prev => ({
+          ...prev,
+          voice: dbRooms.map(r => ({
+            id: r.id,
+            name: r.name,
+            limit: r.limit_count || 5,
+            created_by: r.created_by
+          }))
+        }));
+      }
+    } catch (err) {
+      console.warn('[Rooms] Error loading voice_rooms:', err);
+    }
+  };
+
+  useEffect(() => {
+    loadVoiceRooms();
+
+    const roomChannel = supabase
+      .channel('public:voice_rooms')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'voice_rooms' },
+        () => {
+          loadVoiceRooms();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(roomChannel);
+    };
+  }, []);
 
   // 2. Realtime Room Invites Listener
   useEffect(() => {
@@ -323,18 +371,48 @@ export default function App() {
     socket.emit('user:join', newUserData);
   };
 
-  // Create room submit
-  const handleCreateRoomSubmit = (e) => {
+  // Create room submit (Saves permanently to Supabase & notifies socket)
+  const handleCreateRoomSubmit = async (e) => {
     e.preventDefault();
     if (!newRoomName.trim()) return;
 
-    socket.emit('room:create', {
-      name: newRoomName.trim(),
-      limit: parseInt(newRoomLimit, 10) || 5
-    });
+    const roomId = `room-${Date.now()}`;
+    const roomName = newRoomName.trim();
+    const roomLimit = parseInt(newRoomLimit, 10) || 5;
+
+    // 1. Save permanently to Supabase
+    try {
+      await supabase.from('voice_rooms').insert({
+        id: roomId,
+        name: roomName,
+        limit_count: roomLimit,
+        created_by: currentUser?.id
+      });
+    } catch (err) {
+      console.warn('voice_rooms insert err:', err);
+    }
+
+    // 2. Update local state immediately
+    const newRoomObj = { id: roomId, name: roomName, limit: roomLimit, created_by: currentUser?.id };
+    setChannels(prev => ({
+      ...prev,
+      voice: [...prev.voice.filter(v => v.id !== roomId), newRoomObj]
+    }));
+
+    // 3. Notify socket if connected
+    if (socket.connected) {
+      socket.emit('room:create', {
+        id: roomId,
+        name: roomName,
+        limit: roomLimit
+      });
+    }
 
     setNewRoomName('');
     setShowCreateRoom(false);
+
+    // 4. Immediately join the created room
+    handleJoinVoiceChannel(roomId);
   };
 
   // Accept incoming room invite
