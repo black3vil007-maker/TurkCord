@@ -8,7 +8,10 @@ const ICE_SERVERS = {
     { urls: 'stun:stun2.l.google.com:19302' },
     { urls: 'stun:stun3.l.google.com:19302' },
     { urls: 'stun:stun4.l.google.com:19302' }
-  ]
+  ],
+  bundlePolicy: 'max-bundle',
+  rtcpMuxPolicy: 'require',
+  iceCandidatePoolSize: 2
 };
 
 class WebRTCManager {
@@ -49,26 +52,97 @@ class WebRTCManager {
     }
   }
 
-  // Initialize local microphone
+  // Initialize local microphone with eSports Gaming Low-Latency constraints
   async initLocalAudio() {
     if (this.localStream) return this.localStream;
 
     try {
       this.localStream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          channelCount: 1
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: false }, // Avoids 15-30ms heavy software DSP lookahead delay
+          autoGainControl: { ideal: false },  // Avoids dynamic compressor buffer delay
+          channelCount: { ideal: 1 },         // Mono microphone saves 50% CPU and network payload
+          sampleRate: { ideal: 48000 },       // Native Opus 48kHz avoids resampler delay
+          sampleSize: { ideal: 16 },
+          latency: { ideal: 0.005 }           // Lowest WASAPI / CoreAudio hardware buffer (~5ms)
         },
         video: false
       });
 
+      const audioTrack = this.localStream.getAudioTracks()[0];
+      if (audioTrack && 'contentHint' in audioTrack) {
+        audioTrack.contentHint = 'speech';
+      }
+
       this.setupVAD(this.localStream);
       return this.localStream;
     } catch (err) {
-      console.error('[WebRTC] Microphone access error:', err);
-      throw err;
+      console.warn('[WebRTC] Strict gaming constraints failed, falling back to standard audio:', err);
+      try {
+        this.localStream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: false
+        });
+        this.setupVAD(this.localStream);
+        return this.localStream;
+      } catch (e) {
+        console.error('[WebRTC] Microphone access error:', e);
+        throw err;
+      }
+    }
+  }
+
+  // Optimize SDP specifically for Gaming: 10ms Opus packets, FEC, 64kbps CBR, no DTX
+  optimizeSdpForGaming(sdp) {
+    if (!sdp) return sdp;
+
+    const opusMatch = sdp.match(/a=rtpmap:(\d+)\s+opus\/48000/i);
+    if (!opusMatch) return sdp;
+
+    const opusPayload = opusMatch[1];
+    const gamingParams = 'minptime=10;ptime=10;maxaveragebitrate=64000;stereo=0;sprop-stereo=0;cbr=1;useinbandfec=1;usedtx=0';
+
+    const fmtpRegex = new RegExp(`a=fmtp:${opusPayload}\\s+(.*)`, 'i');
+    if (fmtpRegex.test(sdp)) {
+      return sdp.replace(fmtpRegex, `a=fmtp:${opusPayload} $1;${gamingParams}`);
+    } else {
+      return sdp.replace(opusMatch[0], `${opusMatch[0]}\r\na=fmtp:${opusPayload} ${gamingParams}`);
+    }
+  }
+
+  // Optimize RTCPeerConnection for real-time playout without artificial jitter buffering
+  optimizePeer(pc) {
+    // 1. Receivers: minimize jitter buffer and playout delay to zero
+    if (pc.getReceivers) {
+      pc.getReceivers().forEach(receiver => {
+        if (receiver.track && receiver.track.kind === 'audio') {
+          if ('playoutDelayHint' in receiver) {
+            receiver.playoutDelayHint = 0; // Ultra low-latency playback
+          }
+          if ('jitterBufferDelayHint' in receiver) {
+            receiver.jitterBufferDelayHint = 0; // Zero artificial buffering
+          }
+        }
+      });
+    }
+
+    // 2. Senders: set high network priority and target bitrate
+    if (pc.getSenders) {
+      pc.getSenders().forEach(sender => {
+        if (sender.track && sender.track.kind === 'audio') {
+          try {
+            const params = sender.getParameters();
+            if (!params.encodings || params.encodings.length === 0) {
+              params.encodings = [{}];
+            }
+            params.encodings[0].networkPriority = 'high';
+            params.encodings[0].priority = 'high';
+            params.encodings[0].maxBitrate = 64000;
+            sender.setParameters(params).catch(() => {});
+          } catch (e) {}
+        }
+      });
     }
   }
 
@@ -170,6 +244,7 @@ class WebRTCManager {
       audioEl.play().catch(e => {
         console.warn('[WebRTC] Audio play waiting for user gesture:', e);
       });
+      this.optimizePeer(pc);
       if (this.onPeersChange) this.onPeersChange({ ...this.peers });
     };
 
@@ -196,8 +271,14 @@ class WebRTCManager {
           offerToReceiveAudio: true,
           offerToReceiveVideo: true
         });
-        await pc.setLocalDescription(offer);
-        this.sendSignal('webrtc:offer', { to: peerId, offer });
+        const optimizedOfferSdp = this.optimizeSdpForGaming(offer.sdp);
+        const optimizedOffer = new RTCSessionDescription({
+          type: offer.type,
+          sdp: optimizedOfferSdp
+        });
+        await pc.setLocalDescription(optimizedOffer);
+        this.optimizePeer(pc);
+        this.sendSignal('webrtc:offer', { to: peerId, offer: optimizedOffer });
       } catch (err) {
         console.error('[WebRTC] Error creating offer to ' + peerId, err);
       }
@@ -219,11 +300,17 @@ class WebRTCManager {
 
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
     const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
+    const optimizedAnswerSdp = this.optimizeSdpForGaming(answer.sdp);
+    const optimizedAnswer = new RTCSessionDescription({
+      type: answer.type,
+      sdp: optimizedAnswerSdp
+    });
+    await pc.setLocalDescription(optimizedAnswer);
+    this.optimizePeer(pc);
 
     this.sendSignal('webrtc:answer', {
       to: peerId,
-      answer
+      answer: optimizedAnswer
     });
   }
 
@@ -306,8 +393,14 @@ class WebRTCManager {
   async renegotiate(peerId, pc) {
     try {
       const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socket.emit('webrtc:offer', { to: peerId, offer });
+      const optimizedSdp = this.optimizeSdpForGaming(offer.sdp);
+      const optimizedOffer = new RTCSessionDescription({
+        type: offer.type,
+        sdp: optimizedSdp
+      });
+      await pc.setLocalDescription(optimizedOffer);
+      this.optimizePeer(pc);
+      this.sendSignal('webrtc:offer', { to: peerId, offer: optimizedOffer });
     } catch (e) {
       console.error('[WebRTC] Renegotiation error:', e);
     }

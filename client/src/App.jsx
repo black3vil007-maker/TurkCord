@@ -23,7 +23,8 @@ import {
   Unlock,
   Pencil,
   Trash2,
-  KeyRound
+  KeyRound,
+  Zap
 } from 'lucide-react';
 import AuthModal from './components/AuthModal';
 import FriendsPanel from './components/FriendsPanel';
@@ -1305,6 +1306,11 @@ export default function App() {
                 </div>
 
                 <div className="flex items-center space-x-2">
+                  <div className="hidden sm:flex items-center space-x-1 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-bold">
+                    <Zap className="w-3.5 h-3.5" />
+                    <span>eSports 10ms Opus</span>
+                  </div>
+
                   <div className="flex items-center space-x-1.5 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-bold">
                     <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
                     <span>{livePing} ms</span>

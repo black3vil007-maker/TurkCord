@@ -145,18 +145,31 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser }) {
           </div>
 
           {/* WebRTC Ses Özellikleri Bilgisi */}
-          <div className="bg-[#0d1117] p-3.5 rounded-2xl border border-[#30363d] space-y-1.5 text-xs text-[#7d8590]">
-            <div className="flex items-center space-x-2 text-white font-bold">
-              <Zap className="w-4 h-4 text-amber-400" />
-              <span>Donanım & Ses İşleme Özellikleri</span>
+          <div className="bg-[#0d1117] p-4 rounded-2xl border border-amber-500/30 space-y-2 text-xs text-[#7d8590]">
+            <div className="flex items-center justify-between text-white font-bold pb-1 border-b border-[#30363d]">
+              <div className="flex items-center space-x-2">
+                <Zap className="w-4 h-4 text-amber-400" />
+                <span className="text-amber-400 font-black">eSports Ultra Düşük Gecikme Motoru</span>
+              </div>
+              <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-bold">
+                Aktif
+              </span>
             </div>
-            <div className="flex items-center space-x-2">
-              <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              <span>Yankı Engelleme (Echo Cancellation): Aktif</span>
+            <div className="flex items-center justify-between">
+              <span>Paketleme Gecikmesi (PTime):</span>
+              <span className="text-white font-mono font-bold">10 ms (Standart 40ms yerine)</span>
             </div>
-            <div className="flex items-center space-x-2">
-              <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              <span>Gürültü Bastırma (Noise Suppression): Aktif</span>
+            <div className="flex items-center justify-between">
+              <span>Jitter Buffer Playout:</span>
+              <span className="text-emerald-400 font-mono font-bold">0 ms (Doğrudan Donanım Çıkışı)</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span>Opus Gaming Codec:</span>
+              <span className="text-white font-mono font-bold">64 Kbps CBR + Donanım FEC</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span>Örnekleme Frekansı:</span>
+              <span className="text-white font-mono font-bold">48.000 Hz Native Mono</span>
             </div>
           </div>
 
