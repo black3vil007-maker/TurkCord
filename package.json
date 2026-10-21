@@ -1,0 +1,9 @@
+{
+  "name": "gamecord",
+  "version": "1.0.0",
+  "description": "Discord-like zero latency WebRTC voice and text chat",
+  "scripts": {
+    "server": "npm --prefix server start",
+    "client": "npm --prefix client run dev"
+  }
+}
