@@ -1479,7 +1479,7 @@ export default function App() {
               {incomingFriendToast.text}
             </div>
             <div className="text-[11px] text-indigo-400 font-medium">
-              Kadro sekmesinden istekleri görüntüleyebilirsiniz
+              Arkadaşlar sekmesinden istekleri görüntüleyebilirsiniz
             </div>
           </div>
           <div className="flex items-center space-x-2 pl-2">
@@ -1490,7 +1490,7 @@ export default function App() {
               }}
               className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs transition shadow"
             >
-              Kadro'ya Git
+              Arkadaşlar'a Git
             </button>
             <button
               onClick={() => setIncomingFriendToast(null)}
@@ -1642,7 +1642,7 @@ export default function App() {
                 }`}
               >
                 <Users className="w-3.5 h-3.5" />
-                <span>Kadro</span>
+                <span>Arkadaşlar</span>
                 {pendingFriendCount > 0 && (
                   <span className="px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px] font-black animate-pulse">
                     {pendingFriendCount}
@@ -2366,7 +2366,7 @@ export default function App() {
               </div>
               <h2 className="text-2xl font-black text-white">Henüz bir ses odasında değilsin</h2>
               <p className="text-sm text-[#7d8590] max-w-md mt-2">
-                Arkadaşlarınla konuşmak için sol menüden bir odaya tıkla, kendi odanı aç veya Kadro sekmesinden arkadaşını davet et.
+                Arkadaşlarınla konuşmak için sol menüden bir odaya tıkla, kendi odanı aç veya Arkadaşlar sekmesinden arkadaşını davet et.
               </p>
               <div className="flex flex-wrap justify-center gap-3 mt-6">
                 <button
@@ -2401,9 +2401,9 @@ export default function App() {
             <div className="w-20 h-20 rounded-3xl bg-indigo-600/20 text-indigo-400 flex items-center justify-center text-4xl mb-4 shadow-xl">
               👥
             </div>
-            <h2 className="text-2xl font-black text-white">Kadro & Arkadaşlar</h2>
+            <h2 className="text-2xl font-black text-white">Arkadaşlar</h2>
             <p className="text-sm text-[#7d8590] max-w-md mt-2">
-              Sol paneldeki <b>Kadro</b> sekmesinden 10 haneli ID ile arkadaşlarını ekleyebilir, çevrimiçi olanları tek tıkla ses odana davet edebilirsin.
+              Sol paneldeki <b>Arkadaşlar</b> sekmesinden 10 haneli ID ile arkadaşlarını ekleyebilir, çevrimiçi olanları tek tıkla ses odana davet edebilirsin.
             </p>
             {activeVoiceChannel && (
               <button
@@ -2862,10 +2862,11 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
   }, []);
 
   const resolutions = [
-    { id: 'auto', label: '⚡ Otomatik', desc: 'İnternet Hızına Göre (Max 8 Mbps)' },
-    { id: '1080p', label: '1080p', desc: 'FHD 60 FPS (8 Mbps Kristal Netlik)' },
-    { id: '720p', label: '720p', desc: 'HD 60 FPS (4 Mbps)' },
-    { id: '480p', label: '480p', desc: 'SD Tasarruf (1.2 Mbps)' },
+    { id: 'auto', label: '⚡ Otomatik', desc: 'İnternet Hızına Göre (Max 120 FPS)' },
+    { id: '1080p-120', label: '1080p 120 FPS', desc: '🚀 e-Sports Ultra Akıcı (12 Mbps)' },
+    { id: '1080p', label: '1080p 60 FPS', desc: 'FHD Kristal Netlik (8 Mbps)' },
+    { id: '720p', label: '720p 60 FPS', desc: 'HD Akıcı (4 Mbps)' },
+    { id: '480p', label: '480p 30 FPS', desc: 'SD Tasarruf (1.2 Mbps)' },
   ];
 
   if (isEnded) {

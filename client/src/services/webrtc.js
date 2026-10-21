@@ -621,16 +621,16 @@ class WebRTCManager {
     }
   }
 
-  // Screen sharing toggle with resolution choice (1080p, 720p, 480p, auto)
-  async startScreenShare(targetQuality = '1080p') {
+  // Screen sharing toggle with resolution choice (1080p-120, 1080p, 720p, 480p, auto)
+  async startScreenShare(targetQuality = '1080p-120') {
     let videoConstraints = {
       cursor: 'always'
     };
 
-    if (targetQuality === '1080p' || targetQuality === 'auto') {
+    if (targetQuality === '1080p-120' || targetQuality === '120fps' || targetQuality === 'auto' || targetQuality === '1080p') {
       videoConstraints.width = { ideal: 1920, max: 1920 };
       videoConstraints.height = { ideal: 1080, max: 1080 };
-      videoConstraints.frameRate = { ideal: 60, max: 60 };
+      videoConstraints.frameRate = { ideal: 120, max: 120 };
     } else if (targetQuality === '720p') {
       videoConstraints.width = { ideal: 1280, max: 1280 };
       videoConstraints.height = { ideal: 720, max: 720 };
@@ -640,7 +640,7 @@ class WebRTCManager {
       videoConstraints.height = { ideal: 480, max: 480 };
       videoConstraints.frameRate = { ideal: 30, max: 30 };
     } else {
-      videoConstraints.frameRate = { ideal: 60, max: 60 };
+      videoConstraints.frameRate = { ideal: 120, max: 120 };
     }
 
     try {
@@ -780,9 +780,13 @@ class WebRTCManager {
       // Maintain full resolution without dropping to pixelated downscales
       params.degradationPreference = 'maintain-resolution';
 
-      if (quality === '1080p') {
+      if (quality === '1080p-120' || quality === '120fps') {
         params.encodings[0].scaleResolutionDownBy = 1.0;
-        params.encodings[0].maxBitrate = 8000000; // 8.0 Mbps for razor-sharp 1080p FHD
+        params.encodings[0].maxBitrate = 12000000; // 12.0 Mbps for ultra smooth 120 FPS gaming stream
+        params.encodings[0].maxFramerate = 120;
+      } else if (quality === '1080p') {
+        params.encodings[0].scaleResolutionDownBy = 1.0;
+        params.encodings[0].maxBitrate = 8000000; // 8.0 Mbps for razor-sharp 1080p FHD 60 FPS
         params.encodings[0].maxFramerate = 60;
       } else if (quality === '720p') {
         params.encodings[0].scaleResolutionDownBy = 1.0;
@@ -793,10 +797,10 @@ class WebRTCManager {
         params.encodings[0].maxBitrate = 1200000; // 1.2 Mbps for SD
         params.encodings[0].maxFramerate = 30;
       } else {
-        // Auto / Dynamic Adaptive (up to 8 Mbps)
+        // Auto / Dynamic Adaptive (up to 12 Mbps, max 120 FPS)
         delete params.encodings[0].scaleResolutionDownBy;
-        params.encodings[0].maxBitrate = 8000000;
-        params.encodings[0].maxFramerate = 60;
+        params.encodings[0].maxBitrate = 12000000;
+        params.encodings[0].maxFramerate = 120;
       }
 
       sender.setParameters(params).then(() => {
