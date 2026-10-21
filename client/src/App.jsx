@@ -49,6 +49,7 @@ export default function App() {
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [screenStream, setScreenStream] = useState(null);
   const [screenShareNotification, setScreenShareNotification] = useState(null);
+  const [endedBroadcast, setEndedBroadcast] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [livePing, setLivePing] = useState(12);
 
@@ -341,6 +342,7 @@ export default function App() {
     realtimeSignaling.onScreenShareToggle = (userId, isSharing) => {
       const broadcasterUser = allUsers.find(u => u.id === userId) || { username: 'Arkadaşın' };
       if (isSharing) {
+        setEndedBroadcast(null);
         setScreenShareNotification({
           type: 'started',
           userName: broadcasterUser.username,
@@ -349,6 +351,10 @@ export default function App() {
         setTimeout(() => setScreenShareNotification(null), 4000);
       } else {
         webrtc.handleRemoteScreenShareEnded(userId);
+        setEndedBroadcast({
+          broadcasterName: broadcasterUser.username,
+          stoppedAt: Date.now()
+        });
         setScreenShareNotification({
           type: 'stopped',
           userName: broadcasterUser.username,
@@ -356,6 +362,15 @@ export default function App() {
         });
         setTimeout(() => setScreenShareNotification(null), 6000);
       }
+      setPeers({ ...webrtc.peers });
+    };
+
+    webrtc.onRemoteScreenShareStopped = (peerId) => {
+      const broadcasterUser = allUsers.find(u => u.id === peerId || u.socketId === peerId) || { username: 'Arkadaşın' };
+      setEndedBroadcast({
+        broadcasterName: broadcasterUser.username,
+        stoppedAt: Date.now()
+      });
       setPeers({ ...webrtc.peers });
     };
 
@@ -468,6 +483,20 @@ export default function App() {
       });
     });
 
+    socket.on('voice:screenshare-updated', ({ peerId, isSharing }) => {
+      const broadcasterUser = allUsers.find(u => u.id === peerId || u.socketId === peerId) || { username: 'Arkadaşın' };
+      if (!isSharing) {
+        webrtc.handleRemoteScreenShareEnded(peerId);
+        setEndedBroadcast({
+          broadcasterName: broadcasterUser.username,
+          stoppedAt: Date.now()
+        });
+      } else {
+        setEndedBroadcast(null);
+      }
+      setPeers({ ...webrtc.peers });
+    });
+
     socket.on('webrtc:offer', async ({ from, offer }) => {
       await webrtc.handleOffer(from, offer);
     });
@@ -554,6 +583,7 @@ export default function App() {
     setActiveVoiceChannel(null);
     setIsScreenSharing(false);
     setScreenStream(null);
+    setEndedBroadcast(null);
 
     realtimeSignaling.setVoiceRoom(null);
 
@@ -579,8 +609,10 @@ export default function App() {
       webrtc.stopScreenShare();
       setIsScreenSharing(false);
       setScreenStream(null);
+      setEndedBroadcast(null);
       setPeers({ ...webrtc.peers });
     } else {
+      setEndedBroadcast(null);
       const stream = await webrtc.startScreenShare(viewerResolution);
       if (stream) {
         setIsScreenSharing(true);
@@ -1427,7 +1459,47 @@ export default function App() {
                       broadcasterName={broadcasterUser?.username}
                       currentResolution={viewerResolution}
                       onSelectResolution={handleSelectViewerResolution}
+                      onStreamEnded={(name) => {
+                        setEndedBroadcast({
+                          broadcasterName: name || 'Arkadaşın',
+                          stoppedAt: Date.now()
+                        });
+                      }}
                     />
+                  );
+                }
+
+                if (endedBroadcast && !isScreenSharing) {
+                  return (
+                    <div className="my-4 relative rounded-3xl overflow-hidden bg-[#161b22] border-2 border-rose-500/40 aspect-video max-h-[52vh] w-full mx-auto flex flex-col items-center justify-center p-8 shadow-2xl text-center animate-in fade-in zoom-in-95 duration-200">
+                      <div className="w-16 h-16 rounded-3xl bg-rose-500/10 border border-rose-500/30 text-rose-400 flex items-center justify-center mb-4 shadow-lg animate-pulse">
+                        <Tv className="w-8 h-8" />
+                      </div>
+
+                      <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-rose-500/20 border border-rose-500/30 text-rose-300 text-xs font-black tracking-wide uppercase mb-2">
+                        <span className="w-2 h-2 rounded-full bg-rose-500" />
+                        <span>Yayın Sonlandı</span>
+                      </div>
+
+                      <h3 className="text-2xl font-black text-white tracking-tight">
+                        Yayın Durduruldu
+                      </h3>
+
+                      <p className="text-sm text-[#7d8590] max-w-md mt-2 font-medium">
+                        <strong className="text-white font-bold">{endedBroadcast.broadcasterName}</strong> ekran paylaşımını sonlandırdı.
+                      </p>
+
+                      <div className="flex items-center space-x-3 mt-6">
+                        <button
+                          type="button"
+                          onClick={() => setEndedBroadcast(null)}
+                          className="px-6 py-2.5 rounded-xl bg-[#21262d] hover:bg-[#30363d] text-white text-xs font-bold transition border border-[#30363d] shadow flex items-center space-x-2"
+                        >
+                          <X className="w-4 h-4" />
+                          <span>Pencereyi Kapat</span>
+                        </button>
+                      </div>
+                    </div>
                   );
                 }
 
@@ -1860,7 +1932,7 @@ function CleanChatView({ channel, messages, onSendMessage, activeVoiceChannel, o
   );
 }
 
-function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution, onSelectResolution }) {
+function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution, onSelectResolution, onStreamEnded }) {
   const containerRef = React.useRef(null);
   const videoRef = React.useRef(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -1888,12 +1960,19 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
       });
     }
 
-    const handleEnded = () => setIsEnded(true);
+    const handleEnded = () => {
+      if (document.fullscreenElement) {
+        try { document.exitFullscreen().catch(() => {}); } catch (e) {}
+      }
+      setIsEnded(true);
+      onStreamEnded?.(broadcasterName);
+    };
+
     videoTrack.addEventListener('ended', handleEnded);
     videoTrack.addEventListener('mute', () => {
       setTimeout(() => {
         if (videoTrack.readyState === 'ended' || videoTrack.muted) {
-          setIsEnded(true);
+          handleEnded();
         }
       }, 400);
     });
@@ -1929,13 +2008,19 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
 
   if (isEnded) {
     return (
-      <div className="my-4 rounded-3xl bg-[#161b22] border border-[#30363d] p-8 text-center max-w-lg mx-auto shadow-2xl animate-in fade-in duration-200">
-        <div className="w-12 h-12 rounded-2xl bg-amber-500/10 text-amber-400 flex items-center justify-center mx-auto mb-3">
-          <Tv className="w-6 h-6" />
+      <div className="my-4 relative rounded-3xl overflow-hidden bg-[#161b22] border-2 border-rose-500/40 aspect-video max-h-[52vh] w-full mx-auto flex flex-col items-center justify-center p-8 shadow-2xl text-center animate-in fade-in zoom-in-95 duration-200">
+        <div className="w-16 h-16 rounded-3xl bg-rose-500/10 border border-rose-500/30 text-rose-400 flex items-center justify-center mb-4 shadow-lg animate-pulse">
+          <Tv className="w-8 h-8" />
         </div>
-        <h4 className="text-sm font-black text-white">Yayın Durduruldu</h4>
-        <p className="text-xs text-[#7d8590] mt-1">
-          {broadcasterName ? `${broadcasterName} ekran paylaşımını sonlandırdı.` : 'Ekran paylaşımı kapatıldı.'}
+        <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-rose-500/20 border border-rose-500/30 text-rose-300 text-xs font-black tracking-wide uppercase mb-2">
+          <span className="w-2 h-2 rounded-full bg-rose-500" />
+          <span>Yayın Sonlandı</span>
+        </div>
+        <h3 className="text-2xl font-black text-white tracking-tight">
+          Yayın Durduruldu
+        </h3>
+        <p className="text-sm text-[#7d8590] max-w-md mt-2 font-medium">
+          <strong className="text-white font-bold">{broadcasterName || 'Yayıncı'}</strong> ekran paylaşımını sonlandırdı.
         </p>
       </div>
     );

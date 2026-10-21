@@ -27,6 +27,7 @@ class WebRTCManager {
     this.onPeersChange = null;
     this.onSpeakingChange = null;
     this.onSignal = null;
+    this.onRemoteScreenShareStopped = null;
 
     // Audio & Noise Reduction Settings
     this.audioSettings = this.loadAudioSettings();
@@ -353,6 +354,9 @@ class WebRTCManager {
         if (event.track.kind === 'video') {
           const purgeVideoTrack = () => {
             try { remoteStream.removeTrack(event.track); } catch (e) {}
+            if (this.onRemoteScreenShareStopped) {
+              try { this.onRemoteScreenShareStopped(peerId); } catch (e) {}
+            }
             if (this.onPeersChange) {
               this.peers[peerId] = {
                 ...this.peers[peerId],
@@ -574,6 +578,10 @@ class WebRTCManager {
 
   // Purge remote video tracks when a broadcaster stops sharing (prevents frozen screens)
   handleRemoteScreenShareEnded(peerId) {
+    if (this.onRemoteScreenShareStopped) {
+      try { this.onRemoteScreenShareStopped(peerId); } catch (e) {}
+    }
+
     if (peerId && this.peers[peerId]) {
       const peer = this.peers[peerId];
       if (peer.remoteStream) {
