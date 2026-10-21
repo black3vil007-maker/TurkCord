@@ -5,6 +5,9 @@ dist/
 dist-electron/
 **/dist-electron/
 desktop/app/
+*.exe
+**/downloads/*.exe
+client/public/downloads/*.exe
 .env
 .env.local
 *.log

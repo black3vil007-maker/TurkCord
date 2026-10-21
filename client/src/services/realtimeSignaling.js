@@ -20,6 +20,7 @@ class RealtimeSignaling {
     this.currentVoiceRoom = null;
     this.isMuted = false;
     this.isDeafened = false;
+    this.presenceQueue = Promise.resolve();
   }
 
   init(user) {
@@ -135,19 +136,23 @@ class RealtimeSignaling {
 
   async syncPresence() {
     if (!this.channel || !this.currentUser?.id) return;
-    try {
-      await this.channel.track({
-        id: this.currentUser.id,
-        username: this.currentUser.username,
-        avatar: this.currentUser.avatar,
-        user_code: this.currentUser.user_code,
-        currentVoiceRoom: this.currentVoiceRoom,
-        isMuted: this.isMuted,
-        isDeafened: this.isDeafened
-      });
-    } catch (err) {
-      console.warn('[RealtimeSignaling] Track error:', err);
-    }
+    this.presenceQueue = this.presenceQueue.then(async () => {
+      if (!this.channel || !this.currentUser?.id) return;
+      try {
+        await this.channel.track({
+          id: this.currentUser.id,
+          username: this.currentUser.username,
+          avatar: this.currentUser.avatar,
+          user_code: this.currentUser.user_code,
+          currentVoiceRoom: this.currentVoiceRoom,
+          isMuted: this.isMuted,
+          isDeafened: this.isDeafened
+        });
+      } catch (err) {
+        console.warn('[RealtimeSignaling] Track error:', err);
+      }
+    });
+    return this.presenceQueue;
   }
 
   handlePresenceSync() {
@@ -155,21 +160,31 @@ class RealtimeSignaling {
     const state = this.channel.presenceState();
     const rooms = {};
     const onlineMap = new Map();
+    const userVoiceRoomMap = new Map();
 
     Object.values(state).forEach(presences => {
+      // In Supabase Presence, each key has an array of states. Take the latest one.
       presences.forEach(user => {
         if (!user || !user.id) return;
         onlineMap.set(user.id, user);
-
+        // Latest voice room state for this user:
         if (user.currentVoiceRoom) {
-          if (!rooms[user.currentVoiceRoom]) {
-            rooms[user.currentVoiceRoom] = [];
-          }
-          if (!rooms[user.currentVoiceRoom].some(u => u.id === user.id)) {
-            rooms[user.currentVoiceRoom].push(user);
-          }
+          userVoiceRoomMap.set(user.id, user.currentVoiceRoom);
+        } else {
+          userVoiceRoomMap.delete(user.id);
         }
       });
+    });
+
+    // Enforce strict single-room occupancy per user in Supabase Presence
+    userVoiceRoomMap.forEach((roomId, userId) => {
+      if (!roomId) return;
+      const userObj = onlineMap.get(userId);
+      if (!userObj) return;
+      if (!rooms[roomId]) {
+        rooms[roomId] = [];
+      }
+      rooms[roomId].push(userObj);
     });
 
     if (this.onPresenceChange) {

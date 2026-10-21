@@ -995,7 +995,11 @@ class WebRTCManager {
       }
     }
 
-    socket.emit('voice:leave');
+    if (!keepLocalAudio) {
+      if (socket && socket.connected) {
+        socket.emit('voice:leave');
+      }
+    }
     if (this.onPeersChange) this.onPeersChange({});
   }
 

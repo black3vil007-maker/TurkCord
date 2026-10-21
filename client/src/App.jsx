@@ -114,8 +114,10 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [livePing, setLivePing] = useState(12);
   const [roomEventToast, setRoomEventToast] = useState(null);
+  const [joiningRoomId, setJoiningRoomId] = useState(null);
 
   // References to track room members and trigger join/leave sounds
+  const voiceTransitionSeqRef = useRef(0);
   const activeVoiceChannelRef = useRef(activeVoiceChannel);
   const activeTabRef = useRef(activeTab);
   const activeTextChannelRef = useRef(activeTextChannel);
@@ -927,21 +929,42 @@ export default function App() {
     realtimeSignaling.init(currentUser);
 
     realtimeSignaling.onPresenceChange = (rooms, onlineUsers) => {
-      setVoiceRooms(rooms);
+      const sanitized = { ...(rooms || {}) };
+      const currentActiveRoom = activeVoiceChannelRef.current;
+      const myId = currentUserRef.current?.id;
+
+      // Supabase Presence snapshot'ı içinde kullanıcının tek ve doğru odada kalmasını garantile
+      if (myId) {
+        Object.keys(sanitized).forEach(rId => {
+          sanitized[rId] = (sanitized[rId] || []).filter(u => u.id !== myId && u.socketId !== socket?.id);
+        });
+        if (currentActiveRoom) {
+          if (!sanitized[currentActiveRoom]) sanitized[currentActiveRoom] = [];
+          sanitized[currentActiveRoom].push({
+            id: currentUserRef.current.id,
+            username: currentUserRef.current.username,
+            avatar: currentUserRef.current.avatar,
+            user_code: currentUserRef.current.user_code,
+            socketId: socket?.id
+          });
+        }
+      }
+
+      setVoiceRooms(sanitized);
       if (onlineUsers && onlineUsers.length > 0) {
         setAllUsers(onlineUsers);
       }
 
       // Check if someone joined or left our active voice room
       const activeRoom = activeVoiceChannelRef.current;
-      if (activeRoom && currentUser?.id) {
-        const currentMembers = rooms[activeRoom] || [];
+      if (activeRoom && currentUserRef.current?.id) {
+        const currentMembers = sanitized[activeRoom] || [];
         const currentIds = new Set(currentMembers.map(u => u.id));
         const prevIds = prevRoomMembersRef.current || new Set();
 
         // 1. Toast / audio sound effect for newcomers
         currentMembers.forEach((user) => {
-          if (prevIds.size > 0 && !prevIds.has(user.id) && user.id !== currentUser.id) {
+          if (prevIds.size > 0 && !prevIds.has(user.id) && user.id !== currentUserRef.current?.id) {
             soundEffects.playUserJoined();
             setRoomEventToast({
               type: 'join',
@@ -954,7 +977,7 @@ export default function App() {
 
         // 2. Toast / audio sound effect for departing members
         prevIds.forEach(prevId => {
-          if (!currentIds.has(prevId) && prevId !== currentUser.id) {
+          if (!currentIds.has(prevId) && prevId !== currentUserRef.current?.id) {
             soundEffects.playUserLeft();
             webrtc.closePeer(prevId);
             setPeers({ ...webrtc.peers });
@@ -977,7 +1000,7 @@ export default function App() {
         // Rule: User with larger UUID is the designated initiator. This strictly prevents collisions and race conditions.
         if (!socket || !socket.connected) {
           currentMembers.forEach(async (member) => {
-            if (member && member.id && member.id !== currentUser.id) {
+            if (member && member.id && member.id !== currentUserRef.current?.id) {
               const amIInitiator = String(currentUser.id) > String(member.id);
               const peerObj = webrtc.peers[member.id];
               const connState = peerObj?.connection?.connectionState;
@@ -1122,7 +1145,7 @@ export default function App() {
   // 4. Socket & WebRTC setup (Local & Fallback)
   useEffect(() => {
     // Güvenlik: Oturum açılmadan veya hesap oluşturulmadan Socket bağlantısı kurulmaz
-    if (!currentUser) {
+    if (!currentUser?.id) {
       if (socket.connected) socket.disconnect();
       return;
     }
@@ -1130,7 +1153,9 @@ export default function App() {
     socket.connect();
 
     socket.on('connect', () => {
-      socket.emit('user:join', currentUser);
+      if (currentUserRef.current) {
+        socket.emit('user:join', currentUserRef.current);
+      }
     });
 
     socket.on('init:state', (state) => {
@@ -1139,7 +1164,26 @@ export default function App() {
         voice: mergeVoiceChannels(prev.voice, state.channels?.voice)
       }));
       setAllUsers(state.users);
-      setVoiceRooms(state.voiceRooms || {});
+
+      const rawRooms = { ...(state.voiceRooms || {}) };
+      const currentActiveRoom = activeVoiceChannelRef.current;
+      const myId = currentUserRef.current?.id;
+      if (myId) {
+        Object.keys(rawRooms).forEach(rId => {
+          rawRooms[rId] = (rawRooms[rId] || []).filter(u => u.id !== myId && u.socketId !== socket.id);
+        });
+        if (currentActiveRoom) {
+          if (!rawRooms[currentActiveRoom]) rawRooms[currentActiveRoom] = [];
+          rawRooms[currentActiveRoom].push({
+            id: currentUserRef.current.id,
+            username: currentUserRef.current.username,
+            avatar: currentUserRef.current.avatar,
+            user_code: currentUserRef.current.user_code,
+            socketId: socket.id
+          });
+        }
+      }
+      setVoiceRooms(rawRooms);
       setMessages(state.messages || {});
     });
 
@@ -1151,13 +1195,13 @@ export default function App() {
     });
 
     socket.on('room:created', (newRoom) => {
-      handleJoinVoiceChannel(newRoom.id);
+      // Room creation is handled at the creator component; listeners only update channel lists
     });
 
     socket.on('users:updated', (usersList) => {
       setAllUsers(usersList);
-      if (currentUser?.username) {
-        const me = usersList.find(u => (currentUser.id && (u.id === currentUser.id || u.socketId === socket.id)) || u.username === currentUser.username);
+      if (currentUserRef.current?.username) {
+        const me = usersList.find(u => (currentUserRef.current.id && (u.id === currentUserRef.current.id || u.socketId === socket.id)) || u.username === currentUserRef.current.username);
         if (me) {
           setCurrentUser(prev => prev ? ({
             ...prev,
@@ -1184,7 +1228,7 @@ export default function App() {
     socket.on('friend:respond-received', ({ fromUser, accepted }) => {
       if (accepted) {
         soundEffects.playMessageChime();
-        if (currentUser?.id) loadFriendsData(currentUser.id);
+        if (currentUserRef.current?.id) loadFriendsData(currentUserRef.current.id);
         setIncomingFriendToast({
           type: 'accepted',
           text: `${fromUser.username} arkadaşlık isteğinizi kabul etti! 🎉`,
@@ -1195,7 +1239,25 @@ export default function App() {
     });
 
     socket.on('voice:rooms-updated', (roomsData) => {
-      setVoiceRooms(roomsData || {});
+      const sanitized = { ...(roomsData || {}) };
+      const currentRoom = activeVoiceChannelRef.current;
+      const myId = currentUserRef.current?.id;
+      if (myId) {
+        Object.keys(sanitized).forEach(rId => {
+          sanitized[rId] = (sanitized[rId] || []).filter(u => u.id !== myId && u.socketId !== socket.id);
+        });
+        if (currentRoom) {
+          if (!sanitized[currentRoom]) sanitized[currentRoom] = [];
+          sanitized[currentRoom].push({
+            id: currentUserRef.current.id,
+            username: currentUserRef.current.username,
+            avatar: currentUserRef.current.avatar,
+            user_code: currentUserRef.current.user_code,
+            socketId: socket.id
+          });
+        }
+      }
+      setVoiceRooms(sanitized);
     });
 
     socket.on('chat:message', (newMsg) => {
@@ -1210,27 +1272,36 @@ export default function App() {
     });
 
     socket.on('voice:peers', async ({ roomId, peers: existingPeers }) => {
-      for (const p of existingPeers) {
+      if (activeVoiceChannelRef.current !== roomId) {
+        console.log('[Voice] Ignoring stale voice:peers for room', roomId, 'current active is', activeVoiceChannelRef.current);
+        return;
+      }
+      for (const p of (existingPeers || [])) {
+        if (activeVoiceChannelRef.current !== roomId) return;
         await webrtc.createPeerConnection(p.id, true);
       }
     });
 
     socket.on('voice:user-joined', async ({ roomId, peer }) => {
-      if (peer && peer.id && peer.id !== socket.id) {
-        if (activeVoiceChannelRef.current === roomId) {
-          soundEffects.playUserJoined();
-          setRoomEventToast({
-            type: 'join',
-            text: `${peer.username || 'Birisi'} odaya katıldı 👋`,
-            user: peer
-          });
-          setTimeout(() => setRoomEventToast(null), 4500);
-        }
-        await webrtc.createPeerConnection(peer.id, false);
+      if (!peer || !peer.id || peer.id === socket.id) return;
+      if (activeVoiceChannelRef.current !== roomId) {
+        console.log('[Voice] Ignoring voice:user-joined for different room', roomId);
+        return;
       }
+      soundEffects.playUserJoined();
+      setRoomEventToast({
+        type: 'join',
+        text: `${peer.user?.username || peer.username || 'Birisi'} odaya katıldı 👋`,
+        user: peer.user || peer
+      });
+      setTimeout(() => setRoomEventToast(null), 4500);
+      await webrtc.createPeerConnection(peer.id, false);
     });
 
-    socket.on('voice:user-left', ({ peerId }) => {
+    socket.on('voice:user-left', ({ roomId, peerId }) => {
+      if (roomId && activeVoiceChannelRef.current && activeVoiceChannelRef.current !== roomId) {
+        return;
+      }
       webrtc.closePeer(peerId);
       soundEffects.playUserLeft();
       setSpeakingUsers(prev => {
@@ -1265,14 +1336,17 @@ export default function App() {
     });
 
     socket.on('webrtc:offer', async ({ from, offer }) => {
+      if (!activeVoiceChannelRef.current) return;
       await webrtc.handleOffer(from, offer);
     });
 
     socket.on('webrtc:answer', async ({ from, answer }) => {
+      if (!activeVoiceChannelRef.current) return;
       await webrtc.handleAnswer(from, answer);
     });
 
     socket.on('webrtc:ice-candidate', async ({ from, candidate }) => {
+      if (!activeVoiceChannelRef.current) return;
       await webrtc.handleCandidate(from, candidate);
     });
 
@@ -1310,7 +1384,7 @@ export default function App() {
     });
 
     socket.on('admin:deactivated', async ({ message }) => {
-      if (currentUser?.email?.toLowerCase() !== 'aerayyoruk@gmail.com') {
+      if (currentUserRef.current?.email?.toLowerCase() !== 'aerayyoruk@gmail.com') {
         handleLeaveVoice();
         if (socket.connected) socket.disconnect();
         await supabase.auth.signOut();
@@ -1324,7 +1398,7 @@ export default function App() {
     });
 
     webrtc.onSpeakingChange = (id, isSpeaking) => {
-      const myId = currentUser?.id || 'self';
+      const myId = currentUserRef.current?.id || 'self';
       setSpeakingUsers(prev => ({ ...prev, [myId]: isSpeaking }));
       realtimeSignaling.sendSpeaking(isSpeaking);
     };
@@ -1359,39 +1433,54 @@ export default function App() {
       socket.off('admin:force-muted');
       socket.off('admin:deactivated');
     };
-  }, [currentUser]);
+  }, [currentUser?.id]);
 
   const handleJoinVoiceChannel = async (roomId) => {
-    if (activeVoiceChannel === roomId) {
+    if (!roomId) return;
+
+    // Zaten bağlı olduğumuz odaya tıklandıysa sekmeyi aç ve dön
+    if (activeVoiceChannelRef.current === roomId) {
       setActiveTab('voice');
+      setSelectedVoiceRoomId(roomId);
       return;
     }
 
-    const previousRoomId = activeVoiceChannel;
-    const isSwitching = Boolean(previousRoomId);
+    // Monotonik geçiş sayacı: Hızlı tıklamalarda eski geçişlerin çalışmasını engeller
+    const currentSeq = ++voiceTransitionSeqRef.current;
+    setJoiningRoomId(roomId);
 
-    // 1. Önceki odadan kesin ve anında çıkış yap:
-    if (isSwitching) {
-      console.log('[Voice] Exiting previous room:', previousRoomId);
-      webrtc.leaveRoom(true); // eski peer'ları kapat, mikrofonu hazır tut
-      prevRoomMembersRef.current = new Set();
-      
-      // Önceki odadaki varlığımızı anında temizle
-      setVoiceRooms(prev => {
-        const copy = { ...prev };
-        if (copy[previousRoomId]) {
-          copy[previousRoomId] = copy[previousRoomId].filter(u => 
-            u.id !== currentUser?.id && u.socketId !== socket?.id
-          );
-        }
-        return copy;
-      });
+    // 1. Senkronize state & ref güncellemeleri
+    activeVoiceChannelRef.current = roomId;
+    setActiveVoiceChannel(roomId);
+    setSelectedVoiceRoomId(roomId);
+    setActiveTab('voice');
+    setIsScreenSharing(false);
+    setScreenStream(null);
+    setEndedBroadcast(null);
 
-      if (socket && socket.connected) {
-        socket.emit('voice:leave');
+    // 2. Önceki odadan anında temizlen: Mikrofonu açık tutarak WebRTC peer bağlantılarını temizle
+    webrtc.leaveRoom(true);
+    prevRoomMembersRef.current = new Set();
+
+    // 3. Yerel listede kullanıcının tek bir odada görünmesini garantile
+    setVoiceRooms(prev => {
+      const copy = {};
+      const myId = currentUserRef.current?.id;
+      for (const [rId, users] of Object.entries(prev)) {
+        copy[rId] = (users || []).filter(u => u.id !== myId && u.socketId !== socket?.id);
       }
-      realtimeSignaling.setVoiceRoom(null);
-    }
+      if (currentUserRef.current) {
+        copy[roomId] = [...(copy[roomId] || []), {
+          id: currentUserRef.current.id,
+          username: currentUserRef.current.username,
+          avatar: currentUserRef.current.avatar,
+          user_code: currentUserRef.current.user_code,
+          socketId: socket?.id
+        }];
+      }
+      return copy;
+    });
+
     soundEffects.playSelfJoin();
 
     // Oda kişi sınırı (Limit) kontrolü
@@ -1399,7 +1488,7 @@ export default function App() {
     const existingInRoom = voiceRooms[roomId] || [];
     const roomLimit = Number(targetRoom?.limit_count || targetRoom?.limit || 0);
 
-    const isAlreadyInRoom = existingInRoom.some(u => u.id === currentUser?.id);
+    const isAlreadyInRoom = existingInRoom.some(u => u.id === currentUserRef.current?.id);
     if (!isAlreadyInRoom && roomLimit > 0 && existingInRoom.length >= roomLimit) {
       soundEffects.playUserLeft();
       setAdminNoticeModal({
@@ -1407,77 +1496,82 @@ export default function App() {
         message: `"${targetRoom?.name || 'Bu oda'}" için belirlenen maksimum kişi sınırına (${existingInRoom.length}/${roomLimit}) ulaşıldı. Lütfen başka bir ses odasına katılın veya limitin boşalmasını bekleyin.`,
         icon: '🚫'
       });
+      if (voiceTransitionSeqRef.current === currentSeq) {
+        handleLeaveVoice();
+      }
+      setJoiningRoomId(null);
       return;
     }
 
     try {
-      if (currentUser?.id) {
-        webrtc.setCurrentUserId(currentUser.id);
+      if (currentUserRef.current?.id) {
+        webrtc.setCurrentUserId(currentUserRef.current.id);
       }
       await webrtc.initLocalAudio();
       webrtc.resumeAudioContexts();
 
-      setActiveVoiceChannel(roomId);
-      setSelectedVoiceRoomId(roomId);
-      setActiveTab('voice');
-      setIsScreenSharing(false);
-      setScreenStream(null);
-      setEndedBroadcast(null);
-
-      // Yeni odaya anında eklendiğini göster (anlık UI yanıtı)
-      if (currentUser) {
-        setVoiceRooms(prev => {
-          const copy = { ...prev };
-          const existing = (copy[roomId] || []).filter(u => u.id !== currentUser?.id && u.socketId !== socket?.id);
-          copy[roomId] = [...existing, {
-            id: currentUser.id,
-            username: currentUser.username,
-            avatar: currentUser.avatar,
-            socketId: socket?.id
-          }];
-          return copy;
-        });
+      // Yarış durumu koruması: Kullanıcı başka odaya geçtiyse devam etme
+      if (voiceTransitionSeqRef.current !== currentSeq) {
+        console.log('[Voice] Join superseded after initLocalAudio:', roomId);
+        return;
       }
 
       // Seed initial room members so we don't trigger "user joined" for existing occupants
       const currentOccupants = voiceRooms[roomId] || [];
       const initialIds = new Set(currentOccupants.map(u => u.id));
-      if (currentUser?.id) initialIds.add(currentUser.id);
+      if (currentUserRef.current?.id) initialIds.add(currentUserRef.current.id);
       prevRoomMembersRef.current = initialIds;
 
-      // 1. Cloud presence update
+      // 4. Cloud presence update
       await realtimeSignaling.setVoiceRoom(roomId);
 
-      // 2. Ses odası bağlantısı: Socket.io aktifse Socket sinyali üzerinden peers listesiyle tekil bağlantı kurulur
+      if (voiceTransitionSeqRef.current !== currentSeq) {
+        console.log('[Voice] Join superseded after setVoiceRoom:', roomId);
+        return;
+      }
+
+      // 5. Ses odası bağlantısı: Socket.io aktifse sunucu atomik olarak eski odadan çıkarıp yeniye ekler
       if (socket && socket.connected) {
-        socket.emit('voice:join', { roomId, user: currentUser });
+        socket.emit('voice:join', { roomId, user: currentUserRef.current });
       }
     } catch (err) {
       console.error('[Voice] Error joining room:', err);
-      alert('Mikrofon erişimi reddedildi: ' + (err.message || ''));
+      if (voiceTransitionSeqRef.current === currentSeq) {
+        alert('Mikrofon erişimi reddedildi: ' + (err.message || ''));
+        handleLeaveVoice();
+      }
+    } finally {
+      if (voiceTransitionSeqRef.current === currentSeq) {
+        setJoiningRoomId(null);
+      }
     }
   };
 
   const handleLeaveVoice = () => {
+    // Monotonik sayacı artır: Devam eden veya geciken tüm geçişleri anında geçersiz kıl
+    const currentSeq = ++voiceTransitionSeqRef.current;
+    setJoiningRoomId(null);
     soundEffects.playSelfLeave();
     prevRoomMembersRef.current = new Set();
-    webrtc.leaveRoom(false); // keepLocalAudio = false (fully turns off microphone hardware)
-    const prevRoom = activeVoiceChannel;
+
+    activeVoiceChannelRef.current = null;
     setActiveVoiceChannel(null);
     setIsScreenSharing(false);
     setScreenStream(null);
     setEndedBroadcast(null);
 
-    // Ayrılan kullanıcıyı yerel oda listesinden anında sil
-    if (prevRoom) {
-      setVoiceRooms(prev => {
-        const copy = { ...prev };
-        if (copy[prevRoom]) {
-          copy[prevRoom] = copy[prevRoom].filter(u => u.id !== currentUser?.id && u.socketId !== socket?.id);
-        }
-        return copy;
-      });
-    }
+    // Mikrofonu ve WebRTC bağlantılarını kapat
+    webrtc.leaveRoom(false);
+
+    // Kullanıcıyı tüm odalardan yerel olarak temizle
+    setVoiceRooms(prev => {
+      const copy = {};
+      const myId = currentUserRef.current?.id;
+      for (const [rId, users] of Object.entries(prev)) {
+        copy[rId] = (users || []).filter(u => u.id !== myId && u.socketId !== socket?.id);
+      }
+      return copy;
+    });
 
     realtimeSignaling.setVoiceRoom(null);
 
@@ -2462,6 +2556,7 @@ export default function App() {
                             <div className="flex items-center space-x-1">
                               <button
                                 type="button"
+                                disabled={Boolean(joiningRoomId)}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   setSelectedVoiceRoomId(v.id);
@@ -2469,11 +2564,11 @@ export default function App() {
                                 }}
                                 className={`${
                                   isSelected ? 'flex' : 'hidden group-hover:flex'
-                                } px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-black text-xs shadow-md shadow-emerald-500/25 items-center space-x-1.5 transition transform active:scale-95`}
+                                } px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-black text-xs shadow-md shadow-emerald-500/25 items-center space-x-1.5 transition transform active:scale-95 disabled:opacity-50`}
                                 title={`${v.name} odasına katıl`}
                               >
                                 <Volume2 className="w-3.5 h-3.5" />
-                                <span>Odaya Katıl</span>
+                                <span>{joiningRoomId === v.id ? 'Bağlanıyor...' : 'Odaya Katıl'}</span>
                               </button>
                               {!isSelected && (
                                 <ChevronRight className="w-4 h-4 text-[#7d8590] group-hover:hidden" />
@@ -3094,10 +3189,11 @@ export default function App() {
                 {channels.voice?.slice(0, 3).map((v) => (
                   <button
                     key={v.id}
+                    disabled={Boolean(joiningRoomId)}
                     onClick={() => handleJoinVoiceChannel(v.id)}
-                    className="px-4 py-2.5 rounded-xl bg-[#21262d] hover:bg-[#30363d] text-white font-bold text-sm transition border border-[#30363d]"
+                    className="px-4 py-2.5 rounded-xl bg-[#21262d] hover:bg-[#30363d] text-white font-bold text-sm transition border border-[#30363d] disabled:opacity-50"
                   >
-                    {v.name}'a Katıl
+                    {joiningRoomId === v.id ? 'Bağlanıyor...' : `${v.name}'a Katıl`}
                   </button>
                 ))}
               </div>
