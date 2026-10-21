@@ -443,7 +443,11 @@ class WebRTCManager {
   // Connect to an existing peer (Caller initiates offer)
   async createPeerConnection(peerId, isInitiator) {
     if (this.peers[peerId]) {
-      return this.peers[peerId].connection;
+      const existingPc = this.peers[peerId].connection;
+      if (existingPc && !['closed', 'failed', 'disconnected'].includes(existingPc.connectionState)) {
+        return existingPc;
+      }
+      this.closePeer(peerId);
     }
 
     const pc = new RTCPeerConnection(ICE_SERVERS);
@@ -579,7 +583,8 @@ class WebRTCManager {
   async handleOffer(peerId, offer) {
     let peer = this.peers[peerId];
     let pc;
-    if (!peer) {
+    if (!peer || (peer.connection && ['closed', 'failed', 'disconnected'].includes(peer.connection.connectionState))) {
+      if (peer) this.closePeer(peerId);
       pc = await this.createPeerConnection(peerId, false);
     } else {
       pc = peer.connection;

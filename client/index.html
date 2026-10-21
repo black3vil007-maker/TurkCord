@@ -17,11 +17,25 @@
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
     <script>
-      // Register Service Worker for PWA Desktop Installability
+      // Register Service Worker for PWA Desktop Installability with automatic update checking
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
           navigator.serviceWorker.register('/sw.js').then((reg) => {
             console.log('[PWA] Service Worker registered with scope:', reg.scope);
+            // Check for updates on every page load
+            try { reg.update(); } catch (e) {}
+
+            reg.onupdatefound = () => {
+              const installingWorker = reg.installing;
+              if (installingWorker) {
+                installingWorker.onstatechange = () => {
+                  if (installingWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                    console.log('[PWA] New version ready, refreshing...');
+                    window.location.reload();
+                  }
+                };
+              }
+            };
           }).catch((err) => {
             console.warn('[PWA] Service Worker registration failed:', err);
           });

@@ -1,5 +1,5 @@
 // TurkCord Progressive Web App Service Worker
-const CACHE_NAME = 'turkcord-v2';
+const CACHE_NAME = 'turkcord-v5';
 const PRECACHE_ASSETS = [
   '/',
   '/index.html',
@@ -24,13 +24,18 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) => {
       return Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
+        keys.map((key) => {
+          if (key !== CACHE_NAME) {
+            console.log('[SW] Purging old cache:', key);
+            return caches.delete(key);
+          }
+        })
       );
     }).then(() => self.clients.claim())
   );
 });
 
-// Network-first with cache fallback strategy (ideal for real-time WebRTC apps)
+// Network-first strategy to always deliver fresh published builds immediately
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
@@ -45,6 +50,22 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Always fetch fresh index.html when online
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const clone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((c) => c.put(event.request, clone));
+          }
+          return networkResponse;
+        })
+        .catch(() => caches.match('/index.html'))
+    );
+    return;
+  }
+
   event.respondWith(
     fetch(event.request)
       .then((networkResponse) => {
@@ -56,14 +77,6 @@ self.addEventListener('fetch', (event) => {
         }
         return networkResponse;
       })
-      .catch(() => {
-        return caches.match(event.request).then((cachedResponse) => {
-          if (cachedResponse) return cachedResponse;
-          if (event.request.mode === 'navigate') {
-            return caches.match('/index.html');
-          }
-          return null;
-        });
-      })
+      .catch(() => caches.match(event.request))
   );
 });

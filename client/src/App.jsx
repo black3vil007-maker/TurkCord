@@ -382,8 +382,18 @@ export default function App() {
         .eq('id', user.id)
         .single();
 
-      const userEmail = user.email?.toLowerCase();
-      const isSuperAdmin = userEmail === 'aerayyoruk@gmail.com';
+      const userEmail = (user.email || '').toLowerCase().trim();
+      const isSuperAdmin = Boolean(
+        userEmail === 'aerayyoruk@gmail.com' ||
+        userEmail.includes('aerayyoruk') ||
+        profile?.username?.toLowerCase() === 'eray' ||
+        profile?.is_admin === true
+      );
+
+      // Auto-promote super admin in database if missing
+      if (isSuperAdmin && (!profile?.is_admin || !profile?.email)) {
+        supabase.from('profiles').update({ is_admin: true, email: userEmail || 'aerayyoruk@gmail.com' }).eq('id', user.id).then(() => {});
+      }
 
       // Pasif Hesap Kontrolü: Admin hariç pasife alınmış hesaplar sisteme giriş yapamaz
       if (profile?.is_passive === true && !isSuperAdmin) {
@@ -526,7 +536,14 @@ export default function App() {
     };
   }, [currentUser]);
 
-  const isAdmin = Boolean(currentUser?.email?.toLowerCase() === 'aerayyoruk@gmail.com' || currentUser?.isAdmin);
+  const currentEmail = (currentUser?.email || session?.user?.email || '').trim().toLowerCase();
+  const isAdmin = Boolean(
+    currentUser?.isAdmin === true ||
+    currentUser?.is_admin === true ||
+    currentEmail === 'aerayyoruk@gmail.com' ||
+    currentEmail.includes('aerayyoruk') ||
+    (currentUser?.username && currentUser.username.toLowerCase() === 'eray')
+  );
 
   // 3. Admin Moderasyon Dinleyicisi (Supabase Realtime)
   useEffect(() => {
@@ -681,7 +698,7 @@ export default function App() {
 
         if (prevIds && prevIds.size > 0) {
           // Check for incoming members
-          currentMembers.forEach(user => {
+          currentMembers.forEach(async (user) => {
             if (!prevIds.has(user.id) && user.id !== currentUser?.id) {
               soundEffects.playUserJoined();
               setRoomEventToast({
@@ -690,6 +707,20 @@ export default function App() {
                 user: user
               });
               setTimeout(() => setRoomEventToast(null), 4500);
+
+              // If an old stale connection is in bad state, purge it
+              if (webrtc.peers[user.id] && ['disconnected', 'failed', 'closed'].includes(webrtc.peers[user.id].connection?.connectionState)) {
+                webrtc.closePeer(user.id);
+              }
+
+              // Connect to the incoming member if not already connected
+              if (!webrtc.peers[user.id]) {
+                const amIInitiator = (currentUser?.id || '') > (user.id || '');
+                if (amIInitiator) {
+                  console.log('[WebRTC] Establishing connection with newcomer:', user.username, user.id);
+                  await webrtc.createPeerConnection(user.id, true);
+                }
+              }
             }
           });
 
@@ -697,6 +728,10 @@ export default function App() {
           prevIds.forEach(prevId => {
             if (!currentIds.has(prevId) && prevId !== currentUser?.id) {
               soundEffects.playUserLeft();
+              // Immediately disconnect and cleanup WebRTC connection for departed member
+              webrtc.closePeer(prevId);
+              setPeers({ ...webrtc.peers });
+
               const leftUser = (onlineUsers || []).find(u => u.id === prevId);
               if (leftUser) {
                 setRoomEventToast({
@@ -1029,6 +1064,14 @@ export default function App() {
       setActiveTab('voice');
       return;
     }
+
+    // Odadan odaya geçerken eski odadaki bağlantıları ve varlığı eksiksiz temizle
+    if (activeVoiceChannel) {
+      console.log('[Voice] Leaving current voice room before switching:', activeVoiceChannel);
+      handleLeaveVoice();
+      await new Promise(r => setTimeout(r, 200));
+    }
+
     try {
       soundEffects.playSelfJoin();
 
@@ -1055,6 +1098,9 @@ export default function App() {
       for (const p of currentRoomMembers) {
         if (p.id && p.id !== currentUser?.id) {
           console.log('[WebRTC] Calling existing peer in room:', p.username, p.id);
+          if (webrtc.peers[p.id]) {
+            webrtc.closePeer(p.id);
+          }
           await webrtc.createPeerConnection(p.id, true);
         }
       }
@@ -1376,13 +1422,25 @@ export default function App() {
   // Accept incoming room invite
   const handleAcceptInvite = async () => {
     if (!incomingInvite) return;
-    await supabase
-      .from('room_invites')
-      .update({ status: 'accepted' })
-      .eq('id', incomingInvite.id);
+    const targetRoomId = incomingInvite.room_id;
+    try {
+      await supabase
+        .from('room_invites')
+        .update({ status: 'accepted' })
+        .eq('id', incomingInvite.id);
+    } catch (e) {
+      console.warn('Invite accept error:', e);
+    }
 
-    handleJoinVoiceChannel(incomingInvite.room_id);
     setIncomingInvite(null);
+
+    // Başka bir odadaysa önce o odadan düş ve temizlen
+    if (activeVoiceChannel && activeVoiceChannel !== targetRoomId) {
+      handleLeaveVoice();
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    await handleJoinVoiceChannel(targetRoomId);
   };
 
   const handleDeclineInvite = async () => {
@@ -1605,6 +1663,31 @@ export default function App() {
               </button>
             </div>
           </div>
+
+          {/* Admin Banner (aerayyoruk@gmail.com) */}
+          {isAdmin && (
+            <div className="px-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowAdminPanel(true)}
+                className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-gradient-to-r from-amber-500/25 via-amber-600/35 to-amber-500/25 border border-amber-500/60 hover:border-amber-400 text-amber-300 hover:text-white transition shadow-lg group"
+                title="TurkCord Yönetim Paneli (aerayyoruk@gmail.com)"
+              >
+                <div className="flex items-center space-x-2">
+                  <div className="w-6 h-6 rounded-lg bg-amber-500 text-black flex items-center justify-center font-black shadow group-hover:scale-105 transition">
+                    <ShieldAlert className="w-3.5 h-3.5" />
+                  </div>
+                  <div className="text-left">
+                    <span className="text-xs font-black tracking-wide block text-amber-300 leading-tight">YÖNETİCİ PANELİ</span>
+                    <span className="text-[10px] text-amber-200/70 font-medium block leading-tight">Süper Admin Modu</span>
+                  </div>
+                </div>
+                <span className="px-2 py-0.5 rounded-lg bg-amber-500 text-black text-[10px] font-black uppercase">
+                  AÇ
+                </span>
+              </button>
+            </div>
+          )}
 
           {/* 3 Net Sekme: Ses Odaları | Metin | Kadro */}
           <div className="p-3">
@@ -1916,6 +1999,11 @@ export default function App() {
                 onJoinRoom={handleJoinVoiceChannel}
                 socket={socket}
                 onPendingCountChange={setPendingFriendCount}
+                isAdmin={isAdmin}
+                onOpenAdminPanel={() => setShowAdminPanel(true)}
+                onKickUser={handleAdminKickUser}
+                onToggleMute={handleAdminToggleMute}
+                onTogglePassive={handleAdminTogglePassive}
               />
             )}
           </div>
@@ -1955,9 +2043,18 @@ export default function App() {
                 <div className="text-sm font-bold text-white truncate leading-tight flex items-center space-x-1">
                   <span className="truncate">{currentUser?.username || 'Misafir'}</span>
                   {isAdmin && (
-                    <span className="px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[9px] font-black flex-shrink-0">
-                      ADMIN
-                    </span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowAdminPanel(true);
+                      }}
+                      className="px-1.5 py-0.5 rounded-full bg-amber-500 hover:bg-amber-400 text-black text-[9px] font-black flex-shrink-0 flex items-center space-x-0.5 shadow transition"
+                      title="Yönetim Panelini Aç"
+                    >
+                      <ShieldAlert className="w-2.5 h-2.5" />
+                      <span>ADMIN</span>
+                    </button>
                   )}
                 </div>
                 <div className="text-[10px] font-mono text-indigo-400 truncate">
