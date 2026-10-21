@@ -111,6 +111,28 @@ io.on('connection', (socket) => {
     io.emit('chat:message', newMsg);
   });
 
+  // Dynamic room creation
+  socket.on('room:create', ({ name, limit }) => {
+    const user = users[socket.id];
+    if (!name || !name.trim()) return;
+
+    const roomId = `room-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const newRoom = {
+      id: roomId,
+      name: name.trim(),
+      limit: parseInt(limit, 10) || 5,
+      creator: user ? user.username : 'Oyuncu'
+    };
+
+    channels.voice.push(newRoom);
+    voiceRooms[roomId] = new Set();
+
+    io.emit('channels:updated', channels);
+    io.emit('voice:rooms-updated', getVoiceRoomsData());
+
+    socket.emit('room:created', newRoom);
+  });
+
   // Voice room join
   socket.on('voice:join', ({ roomId }) => {
     const user = users[socket.id];

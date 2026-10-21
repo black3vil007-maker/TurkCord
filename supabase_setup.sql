@@ -8,6 +8,7 @@ create table if not exists public.profiles (
   id uuid references auth.users on delete cascade primary key,
   username text unique not null,
   avatar text default '🎮',
+  user_code text unique,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
@@ -27,11 +28,12 @@ on public.profiles for update using (auth.uid() = id);
 create or replace function public.handle_new_user()
 returns trigger as $$
 begin
-  insert into public.profiles (id, username, avatar)
+  insert into public.profiles (id, username, avatar, user_code)
   values (
     new.id,
     coalesce(new.raw_user_meta_data->>'username', 'Oyuncu_' || substr(new.id::text, 1, 6)),
-    coalesce(new.raw_user_meta_data->>'avatar', '🎮')
+    coalesce(new.raw_user_meta_data->>'avatar', '🎮'),
+    floor(1000000000 + random() * 9000000000)::text
   );
   return new;
 end;

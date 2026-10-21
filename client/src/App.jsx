@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { socket } from './services/socket';
 import { webrtc } from './services/webrtc';
-import { supabase, isSupabaseConfigured } from './services/supabase';
+import { supabase } from './services/supabase';
 import { 
   Volume2, 
   Hash, 
@@ -15,9 +15,10 @@ import {
   Users,
   ChevronRight,
   LogOut,
-  PhoneCall,
-  Check,
-  X
+  Plus,
+  X,
+  Radio,
+  Check
 } from 'lucide-react';
 import AuthModal from './components/AuthModal';
 import FriendsPanel from './components/FriendsPanel';
@@ -40,10 +41,15 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [livePing, setLivePing] = useState(12);
 
-  // Incoming Room Invite State
+  // Create room modal / form state
+  const [showCreateRoom, setShowCreateRoom] = useState(false);
+  const [newRoomName, setNewRoomName] = useState('');
+  const [newRoomLimit, setNewRoomLimit] = useState(5);
+
+  // Incoming Room Invite
   const [incomingInvite, setIncomingInvite] = useState(null);
 
-  // 1. Check Supabase Auth Session on mount
+  // 1. Check Supabase Auth Session
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
       setSession(currentSession);
@@ -64,6 +70,15 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
+  function hashCode(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = (hash << 5) - hash + str.charCodeAt(i);
+      hash |= 0;
+    }
+    return hash;
+  }
+
   const loadUserProfile = async (user) => {
     try {
       const { data: profile } = await supabase
@@ -72,11 +87,15 @@ export default function App() {
         .eq('id', user.id)
         .single();
 
+      // Deterministic 10-digit code fallback
+      const generatedCode = profile?.user_code || Math.abs(hashCode(user.id)).toString().padStart(10, '0').slice(0, 10);
+
       const userObj = {
         id: user.id,
         email: user.email,
         username: profile?.username || user.user_metadata?.username || user.email.split('@')[0],
-        avatar: profile?.avatar || user.user_metadata?.avatar || '🎮'
+        avatar: profile?.avatar || user.user_metadata?.avatar || '🎮',
+        user_code: generatedCode
       };
 
       setCurrentUser(userObj);
@@ -105,7 +124,6 @@ export default function App() {
         async (payload) => {
           const invite = payload.new;
           if (invite.status === 'pending') {
-            // Get sender name
             const { data: sender } = await supabase
               .from('profiles')
               .select('username, avatar')
@@ -142,6 +160,14 @@ export default function App() {
       setAllUsers(state.users);
       setVoiceRooms(state.voiceRooms);
       setMessages(state.messages || {});
+    });
+
+    socket.on('channels:updated', (updatedChannels) => {
+      setChannels(updatedChannels);
+    });
+
+    socket.on('room:created', (newRoom) => {
+      handleJoinVoiceChannel(newRoom.id);
     });
 
     socket.on('users:updated', (usersList) => {
@@ -211,6 +237,8 @@ export default function App() {
       clearInterval(pingInterval);
       socket.off('connect');
       socket.off('init:state');
+      socket.off('channels:updated');
+      socket.off('room:created');
       socket.off('users:updated');
       socket.off('voice:rooms-updated');
       socket.off('chat:message');
@@ -295,6 +323,20 @@ export default function App() {
     socket.emit('user:join', newUserData);
   };
 
+  // Create room submit
+  const handleCreateRoomSubmit = (e) => {
+    e.preventDefault();
+    if (!newRoomName.trim()) return;
+
+    socket.emit('room:create', {
+      name: newRoomName.trim(),
+      limit: parseInt(newRoomLimit, 10) || 5
+    });
+
+    setNewRoomName('');
+    setShowCreateRoom(false);
+  };
+
   // Accept incoming room invite
   const handleAcceptInvite = async () => {
     if (!incomingInvite) return;
@@ -323,13 +365,13 @@ export default function App() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#0d1117] text-[#e6edf3] font-sans antialiased relative">
-      {/* Gelen Canlı Oda Daveti Bildirimi (Floating Toast) */}
+      {/* Canlı Oda Daveti Bildirimi (Floating Toast) */}
       {incomingInvite && (
         <div className="absolute top-5 left-1/2 -translate-x-1/2 z-50 bg-[#161b22] border-2 border-emerald-500 rounded-2xl p-4 shadow-2xl flex items-center space-x-4 animate-bounce-subtle">
           <div className="text-3xl">{incomingInvite.senderAvatar}</div>
           <div>
             <div className="text-sm font-bold text-white">
-              {incomingInvite.senderName} seni davet ediyor!
+              {incomingInvite.senderName} seni ses odasına davet ediyor!
             </div>
             <div className="text-xs text-emerald-400 font-medium">
               🔊 {incomingInvite.room_name} odasına katılmak ister misin?
@@ -378,7 +420,7 @@ export default function App() {
             </button>
           </div>
 
-          {/* 3 Net Sekme: Ses Odaları | Metin | Arkadaşlar */}
+          {/* 3 Net Sekme: Ses Odaları | Metin | Kadro */}
           <div className="p-3">
             <div className="flex rounded-xl bg-[#0d1117] p-1 border border-[#30363d]">
               <button
@@ -422,12 +464,70 @@ export default function App() {
           {/* Liste İçeriği */}
           <div className="px-3 space-y-2 overflow-y-auto max-h-[calc(100vh-220px)]">
             {activeTab === 'voice' && (
-              // 1. SES ODALARI LİSTESİ
+              // 1. SES ODALARI LİSTESİ + ODA OLUŞTURMA
               <div className="space-y-2 pt-1">
-                <div className="text-[11px] font-bold text-[#7d8590] uppercase tracking-wider px-2">
-                  Aktif Ses Odaları
+                <div className="flex items-center justify-between px-2">
+                  <span className="text-[11px] font-bold text-[#7d8590] uppercase tracking-wider">
+                    Ses Odaları
+                  </span>
+
+                  <button
+                    onClick={() => setShowCreateRoom(!showCreateRoom)}
+                    className="flex items-center space-x-1 px-2 py-0.5 rounded-lg bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600 hover:text-white text-[11px] font-bold transition"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>Oda Aç</span>
+                  </button>
                 </div>
 
+                {/* Oda Oluşturma Formu */}
+                {showCreateRoom && (
+                  <form onSubmit={handleCreateRoomSubmit} className="p-3 rounded-2xl bg-[#21262d] border border-indigo-500/50 space-y-2.5">
+                    <div className="text-xs font-bold text-white flex items-center justify-between">
+                      <span>Yeni Ses Odası Aç</span>
+                      <button type="button" onClick={() => setShowCreateRoom(false)} className="text-[#7d8590] hover:text-white">
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    <input
+                      type="text"
+                      required
+                      placeholder="Oda adı (Örn: Valorant Squad)..."
+                      value={newRoomName}
+                      onChange={(e) => setNewRoomName(e.target.value)}
+                      className="w-full bg-[#0d1117] border border-[#30363d] focus:border-indigo-500 rounded-xl px-3 py-1.5 text-xs text-white outline-none"
+                    />
+
+                    <div className="flex items-center justify-between text-xs text-[#7d8590]">
+                      <span>Kişi Sınırı:</span>
+                      <div className="flex space-x-1">
+                        {[2, 5, 10].map((num) => (
+                          <button
+                            key={num}
+                            type="button"
+                            onClick={() => setNewRoomLimit(num)}
+                            className={`px-2 py-0.5 rounded-lg font-bold text-[11px] ${
+                              newRoomLimit === num ? 'bg-indigo-600 text-white' : 'bg-[#0d1117] text-[#7d8590]'
+                            }`}
+                          >
+                            {num}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={!newRoomName.trim()}
+                      className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-1.5 rounded-xl text-xs transition shadow"
+                    >
+                      Odayı Başlat
+                    </button>
+                  </form>
+                )}
+
+                {/* Odalar */}
                 {channels.voice?.map((v) => {
                   const isCurrent = activeVoiceChannel === v.id;
                   const usersInRoom = voiceRooms[v.id] || [];
@@ -452,7 +552,7 @@ export default function App() {
                           <div>
                             <div className="text-sm font-bold text-white">{v.name}</div>
                             <div className="text-[11px] text-[#7d8590]">
-                              {usersInRoom.length === 0 ? 'Oda boş' : `${usersInRoom.length} kişi bağlı`}
+                              {usersInRoom.length === 0 ? 'Oda boş' : `${usersInRoom.length}/${v.limit} kişi bağlı`}
                             </div>
                           </div>
                         </div>
@@ -493,7 +593,7 @@ export default function App() {
             )}
 
             {activeTab === 'chat' && (
-              // 2. METİN KANALLARI LİSTESİ
+              // 2. METİN KANALLARI
               <div className="space-y-1.5 pt-1">
                 <div className="text-[11px] font-bold text-[#7d8590] uppercase tracking-wider px-2">
                   Metin Kanalları
@@ -523,7 +623,7 @@ export default function App() {
             )}
 
             {activeTab === 'friends' && (
-              // 3. ARKADAŞLAR PANELİ
+              // 3. KADRO & ARKADAŞLAR PANELİ
               <FriendsPanel
                 currentUser={currentUser}
                 activeVoiceChannel={activeVoiceChannel}
@@ -535,7 +635,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* Sol Panel Altı: Kullanıcı & Ses Kartı */}
+        {/* Sol Panel Altı: Kullanıcı Kartı & 10 Haneli ID */}
         <div className="p-3 border-t border-[#30363d] bg-[#161b22]">
           {activeVoiceChannel && (
             <div className="mb-2 p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between">
@@ -555,11 +655,11 @@ export default function App() {
             </div>
           )}
 
-          {/* Profil, Mikrofon & Çıkış */}
+          {/* Profil Bilgisi */}
           <div className="flex items-center justify-between">
             <div 
               onClick={() => setShowSettings(true)}
-              className="flex items-center space-x-2.5 cursor-pointer hover:opacity-80 transition truncate max-w-[125px]"
+              className="flex items-center space-x-2.5 cursor-pointer hover:opacity-80 transition truncate max-w-[130px]"
             >
               <div className="relative flex-shrink-0">
                 <span className="text-2xl">{currentUser?.avatar || '🎮'}</span>
@@ -567,9 +667,11 @@ export default function App() {
               </div>
               <div className="truncate">
                 <div className="text-sm font-bold text-white truncate leading-tight">
-                  {currentUser?.username || 'Giriş Yapılmadı'}
+                  {currentUser?.username || 'Misafir'}
                 </div>
-                <div className="text-[11px] text-emerald-400">Çevrimiçi</div>
+                <div className="text-[10px] font-mono text-indigo-400 truncate">
+                  ID: {currentUser?.user_code || '------'}
+                </div>
               </div>
             </div>
 
@@ -758,14 +860,21 @@ export default function App() {
               </div>
               <h2 className="text-2xl font-black text-white">Henüz bir ses odasında değilsin</h2>
               <p className="text-sm text-[#7d8590] max-w-md mt-2">
-                Arkadaşlarınla konuşmak için sol menüden bir ses odasına tıkla veya Kadro sekmesinden arkadaşını davet et.
+                Arkadaşlarınla konuşmak için sol menüden bir odaya tıkla, kendi odanı aç veya Kadro sekmesinden arkadaşını davet et.
               </p>
-              <div className="flex gap-3 mt-6">
-                {channels.voice?.map((v) => (
+              <div className="flex flex-wrap justify-center gap-3 mt-6">
+                <button
+                  onClick={() => { setActiveTab('voice'); setShowCreateRoom(true); }}
+                  className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm transition shadow flex items-center space-x-2"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Kendi Odanı Aç</span>
+                </button>
+                {channels.voice?.slice(0, 3).map((v) => (
                   <button
                     key={v.id}
                     onClick={() => handleJoinVoiceChannel(v.id)}
-                    className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm transition shadow-md"
+                    className="px-4 py-2.5 rounded-xl bg-[#21262d] hover:bg-[#30363d] text-white font-bold text-sm transition border border-[#30363d]"
                   >
                     {v.name}'a Katıl
                   </button>
@@ -782,14 +891,13 @@ export default function App() {
             onGoToVoice={() => setActiveTab('voice')}
           />
         ) : (
-          // Kadro sekmesindeyken sağ ekranda hızlı davet veya lobi durumu
           <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
             <div className="w-20 h-20 rounded-3xl bg-indigo-600/20 text-indigo-400 flex items-center justify-center text-4xl mb-4 shadow-xl">
               👥
             </div>
-            <h2 className="text-2xl font-black text-white">Kadro & Arkadaşlar Yönetimi</h2>
+            <h2 className="text-2xl font-black text-white">Kadro & Arkadaşlar</h2>
             <p className="text-sm text-[#7d8590] max-w-md mt-2">
-              Sol paneldeki <b>Kadro</b> sekmesinden arkadaşlarını ekleyebilir, çevrimiçi olanları ses odana davet edebilirsin.
+              Sol paneldeki <b>Kadro</b> sekmesinden 10 haneli ID ile arkadaşlarını ekleyebilir, çevrimiçi olanları tek tıkla ses odana davet edebilirsin.
             </p>
             {activeVoiceChannel && (
               <button
@@ -803,7 +911,7 @@ export default function App() {
         )}
       </main>
 
-      {/* Auth Modal (Kayıt / Onay / Giriş) */}
+      {/* Auth Modal (Kayıt / Giriş) */}
       {!currentUser && (
         <AuthModal onAuthSuccess={(user) => {
           setCurrentUser(user);
