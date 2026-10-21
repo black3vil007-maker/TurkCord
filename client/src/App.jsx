@@ -416,12 +416,26 @@ export default function App() {
         } catch (e) {}
       }
 
+      // "Admin" Kullanıcı Adı Rezervasyonu: Yalnızca aerayyoruk@gmail.com alabilir
+      let targetUsername = profile?.username || user.user_metadata?.username || user.email.split('@')[0];
+      if (isSuperAdmin) {
+        targetUsername = 'Admin';
+        if (profile?.username !== 'Admin') {
+          supabase.from('profiles').update({ username: 'Admin', is_admin: true, email: userEmail }).eq('id', user.id).then(() => {});
+        }
+      } else {
+        if (targetUsername && ['admin', 'administrator', 'yönetici'].includes(targetUsername.toLowerCase())) {
+          targetUsername = 'Kullanıcı_' + (userCode || user.id.slice(0, 4));
+          supabase.from('profiles').update({ username: targetUsername }).eq('id', user.id).then(() => {});
+        }
+      }
+
       const userObj = {
         id: user.id,
         email: user.email,
         isAdmin: isSuperAdmin || Boolean(profile?.is_admin),
         isPassive: Boolean(profile?.is_passive),
-        username: profile?.username || user.user_metadata?.username || user.email.split('@')[0],
+        username: targetUsername,
         avatar: profile?.avatar || user.user_metadata?.avatar || '🎮',
         user_code: userCode
       };
@@ -1226,6 +1240,18 @@ export default function App() {
 
   const handleUpdateProfile = async (updated) => {
     if (!currentUser?.id) return;
+
+    // "Admin" kullanıcı adı rezervasyonu kontrolü
+    if (updated.username) {
+      const cleanName = updated.username.trim().toLowerCase();
+      const myEmail = (currentUser?.email || session?.user?.email || '').toLowerCase().trim();
+      const isReserved = ['admin', 'administrator', 'yönetici'].includes(cleanName);
+      if (isReserved && myEmail !== 'aerayyoruk@gmail.com') {
+        alert("🚫 'Admin' kullanıcı adı yalnızca sistem yöneticisine (aerayyoruk@gmail.com) aittir.");
+        return;
+      }
+    }
+
     await supabase
       .from('profiles')
       .update({ username: updated.username, avatar: updated.avatar })
@@ -1233,7 +1259,10 @@ export default function App() {
 
     const newUserData = { ...currentUser, ...updated };
     setCurrentUser(newUserData);
-    socket.emit('user:join', newUserData);
+    realtimeSignaling.init(newUserData);
+    if (socket.connected) {
+      socket.emit('user:join', newUserData);
+    }
   };
 
   const handleRoomClick = (room) => {

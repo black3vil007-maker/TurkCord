@@ -84,8 +84,18 @@ export default function AuthModal({ onAuthSuccess }) {
     setErrorMsg('');
     setSuccessNotice('');
 
-    if (!username.trim()) {
+    const cleanUsername = username.trim();
+    const cleanEmail = email.trim().toLowerCase();
+
+    if (!cleanUsername) {
       setErrorMsg('Lütfen bir kullanıcı adı belirleyin.');
+      return;
+    }
+
+    // "admin" kullanıcı adı rezervasyonu: Yalnızca aerayyoruk@gmail.com alabilir
+    const isReservedAdminName = ['admin', 'administrator', 'yönetici'].includes(cleanUsername.toLowerCase());
+    if (isReservedAdminName && cleanEmail !== 'aerayyoruk@gmail.com') {
+      setErrorMsg("🚫 'Admin' kullanıcı adı rezerve edilmiştir ve yalnızca sistem yöneticisine (aerayyoruk@gmail.com) aittir. Lütfen başka bir kullanıcı adı seçin.");
       return;
     }
 
@@ -93,11 +103,11 @@ export default function AuthModal({ onAuthSuccess }) {
 
     try {
       const { data, error } = await supabase.auth.signUp({
-        email: email.trim(),
+        email: cleanEmail,
         password: password,
         options: {
           data: {
-            username: username.trim(),
+            username: cleanUsername,
             avatar: avatar
           }
         }

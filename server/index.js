@@ -67,6 +67,10 @@ io.on('connection', (socket) => {
     }
 
     const isAdmin = Boolean(email && email.toLowerCase() === 'aerayyoruk@gmail.com');
+    let finalUsername = username.trim();
+    if (['admin', 'administrator', 'yönetici'].includes(finalUsername.toLowerCase()) && !isAdmin) {
+      finalUsername = 'Kullanıcı_' + (user_code || id.slice(0, 4));
+    }
 
     users[socket.id] = {
       socketId: socket.id,
@@ -74,7 +78,7 @@ io.on('connection', (socket) => {
       email: email || null,
       isAdmin: isAdmin,
       isPassive: false,
-      username: username.trim(),
+      username: finalUsername,
       avatar: avatar || '🎮',
       user_code: user_code || null,
       currentVoiceRoom: null,

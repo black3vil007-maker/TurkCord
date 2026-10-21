@@ -53,10 +53,20 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser }) {
 
   const handleSave = (e) => {
     e?.preventDefault();
-    if (!username.trim()) return;
+    const cleanUsername = username.trim();
+    if (!cleanUsername) return;
+
+    // "admin" kullanıcı adı rezervasyonu: Yalnızca aerayyoruk@gmail.com alabilir
+    const myEmail = (currentUser?.email || '').toLowerCase().trim();
+    const isReservedAdminName = ['admin', 'administrator', 'yönetici'].includes(cleanUsername.toLowerCase());
+    if (isReservedAdminName && myEmail !== 'aerayyoruk@gmail.com') {
+      alert("🚫 'Admin' kullanıcı adı sistem yöneticisine (aerayyoruk@gmail.com) rezerve edilmiştir. Lütfen farklı bir kullanıcı adı seçin.");
+      return;
+    }
+
     webrtc.stopMicTest();
     webrtc.saveAudioSettings(audioSettings);
-    onUpdateUser({ username: username.trim(), avatar });
+    onUpdateUser({ username: cleanUsername, avatar });
     onClose();
   };
 
