@@ -1,10 +1,13 @@
 import { socket } from './socket';
+import { realtimeSignaling } from './realtimeSignaling';
 
 const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' }
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' }
   ]
 };
 
@@ -20,6 +23,30 @@ class WebRTCManager {
     this.isDeafened = false;
     this.onPeersChange = null;
     this.onSpeakingChange = null;
+    this.onSignal = null;
+  }
+
+  // Unified signaling dispatcher (both Supabase Realtime Broadcast & Socket.io)
+  sendSignal(event, data) {
+    if (this.onSignal) {
+      try { this.onSignal(event, data); } catch (e) {}
+    }
+
+    // 1. Supabase Realtime
+    if (event === 'webrtc:offer') {
+      realtimeSignaling.sendOffer(data.to, data.offer);
+    } else if (event === 'webrtc:answer') {
+      realtimeSignaling.sendAnswer(data.to, data.answer);
+    } else if (event === 'webrtc:ice-candidate') {
+      realtimeSignaling.sendCandidate(data.to, data.candidate);
+    } else if (event === 'voice:speaking') {
+      realtimeSignaling.sendSpeaking(data.isSpeaking);
+    }
+
+    // 2. Socket.io (if connected)
+    if (socket && socket.connected) {
+      socket.emit(event, data);
+    }
   }
 
   // Initialize local microphone
@@ -66,8 +93,8 @@ class WebRTCManager {
         if (this.isMuted || !this.localStream) {
           if (wasSpeaking) {
             wasSpeaking = false;
-            if (this.onSpeakingChange) this.onSpeakingChange(socket.id, false);
-            socket.emit('voice:speaking', { isSpeaking: false });
+            if (this.onSpeakingChange) this.onSpeakingChange('self', false);
+            this.sendSignal('voice:speaking', { isSpeaking: false });
           }
           return;
         }
@@ -82,8 +109,8 @@ class WebRTCManager {
 
         if (isSpeaking !== wasSpeaking) {
           wasSpeaking = isSpeaking;
-          if (this.onSpeakingChange) this.onSpeakingChange(socket.id, isSpeaking);
-          socket.emit('voice:speaking', { isSpeaking });
+          if (this.onSpeakingChange) this.onSpeakingChange('self', isSpeaking);
+          this.sendSignal('voice:speaking', { isSpeaking });
         }
       }, 100);
     } catch (e) {
@@ -100,9 +127,16 @@ class WebRTCManager {
     const pc = new RTCPeerConnection(ICE_SERVERS);
     const remoteStream = new MediaStream();
 
-    // Create an audio element for remote audio playback
-    const audioEl = new Audio();
-    audioEl.autoplay = true;
+    // Create or reuse an audio element for remote audio playback attached to DOM
+    let audioEl = document.getElementById(`audio-peer-${peerId}`);
+    if (!audioEl) {
+      audioEl = document.createElement('audio');
+      audioEl.id = `audio-peer-${peerId}`;
+      audioEl.autoplay = true;
+      audioEl.playsInline = true;
+      audioEl.style.display = 'none';
+      document.body.appendChild(audioEl);
+    }
     audioEl.muted = this.isDeafened;
     audioEl.srcObject = remoteStream;
 
@@ -132,13 +166,17 @@ class WebRTCManager {
       event.streams[0].getTracks().forEach(track => {
         remoteStream.addTrack(track);
       });
+      audioEl.srcObject = remoteStream;
+      audioEl.play().catch(e => {
+        console.warn('[WebRTC] Audio play waiting for user gesture:', e);
+      });
       if (this.onPeersChange) this.onPeersChange({ ...this.peers });
     };
 
-    // Send ICE candidates to remote peer via socket
+    // Send ICE candidates to remote peer via unified signaling
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        socket.emit('webrtc:ice-candidate', {
+        this.sendSignal('webrtc:ice-candidate', {
           to: peerId,
           candidate: event.candidate
         });
@@ -159,7 +197,7 @@ class WebRTCManager {
           offerToReceiveVideo: true
         });
         await pc.setLocalDescription(offer);
-        socket.emit('webrtc:offer', { to: peerId, offer });
+        this.sendSignal('webrtc:offer', { to: peerId, offer });
       } catch (err) {
         console.error('[WebRTC] Error creating offer to ' + peerId, err);
       }
@@ -183,7 +221,7 @@ class WebRTCManager {
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
 
-    socket.emit('webrtc:answer', {
+    this.sendSignal('webrtc:answer', {
       to: peerId,
       answer
     });

@@ -23,6 +23,7 @@ import {
 import AuthModal from './components/AuthModal';
 import FriendsPanel from './components/FriendsPanel';
 import SettingsModal from './components/SettingsModal';
+import { realtimeSignaling } from './services/realtimeSignaling';
 
 export default function App() {
   const [session, setSession] = useState(null);
@@ -245,7 +246,50 @@ export default function App() {
     };
   }, [currentUser]);
 
-  // 3. Socket & WebRTC setup
+  // 3. Supabase Realtime Presence & Cloud WebRTC Signaling (Works on Vercel & P2P)
+  useEffect(() => {
+    if (!currentUser?.id) return;
+
+    realtimeSignaling.init(currentUser);
+
+    realtimeSignaling.onPresenceChange = (rooms, onlineUsers) => {
+      setVoiceRooms(rooms);
+      if (onlineUsers && onlineUsers.length > 0) {
+        setAllUsers(onlineUsers);
+      }
+    };
+
+    realtimeSignaling.onOffer = async (fromId, offer) => {
+      console.log('[Realtime] Incoming WebRTC offer from:', fromId);
+      await webrtc.handleOffer(fromId, offer);
+    };
+
+    realtimeSignaling.onAnswer = async (fromId, answer) => {
+      console.log('[Realtime] Incoming WebRTC answer from:', fromId);
+      await webrtc.handleAnswer(fromId, answer);
+    };
+
+    realtimeSignaling.onCandidate = async (fromId, candidate) => {
+      await webrtc.handleCandidate(fromId, candidate);
+    };
+
+    realtimeSignaling.onSpeaking = (fromId, isSpeaking) => {
+      setSpeakingUsers(prev => ({ ...prev, [fromId]: isSpeaking }));
+    };
+
+    realtimeSignaling.onChatMessage = (newMsg) => {
+      setMessages(prev => ({
+        ...prev,
+        [newMsg.channelId]: [...(prev[newMsg.channelId] || []).filter(m => m.id !== newMsg.id), newMsg]
+      }));
+    };
+
+    return () => {
+      realtimeSignaling.destroy();
+    };
+  }, [currentUser?.id]);
+
+  // 4. Socket & WebRTC setup (Local & Fallback)
   useEffect(() => {
     socket.connect();
 
@@ -261,7 +305,7 @@ export default function App() {
         voice: mergeVoiceChannels(prev.voice, state.channels?.voice)
       }));
       setAllUsers(state.users);
-      setVoiceRooms(state.voiceRooms);
+      setVoiceRooms(prev => ({ ...state.voiceRooms, ...prev }));
       setMessages(state.messages || {});
     });
 
@@ -314,19 +358,25 @@ export default function App() {
     });
 
     socket.on('voice:rooms-updated', (roomsData) => {
-      setVoiceRooms(roomsData);
+      setVoiceRooms(prev => ({ ...roomsData, ...prev }));
     });
 
     socket.on('chat:message', (newMsg) => {
       setMessages(prev => ({
         ...prev,
-        [newMsg.channelId]: [...(prev[newMsg.channelId] || []), newMsg]
+        [newMsg.channelId]: [...(prev[newMsg.channelId] || []).filter(m => m.id !== newMsg.id), newMsg]
       }));
     });
 
     socket.on('voice:peers', async ({ roomId, peers: existingPeers }) => {
       for (const p of existingPeers) {
         await webrtc.createPeerConnection(p.id, true);
+      }
+    });
+
+    socket.on('voice:user-joined', async ({ roomId, peer }) => {
+      if (peer && peer.id && peer.id !== socket.id) {
+        await webrtc.createPeerConnection(peer.id, false);
       }
     });
 
@@ -356,7 +406,9 @@ export default function App() {
     });
 
     webrtc.onSpeakingChange = (id, isSpeaking) => {
-      setSpeakingUsers(prev => ({ ...prev, [id]: isSpeaking }));
+      const myId = currentUser?.id || 'self';
+      setSpeakingUsers(prev => ({ ...prev, [myId]: isSpeaking }));
+      realtimeSignaling.sendSpeaking(isSpeaking);
     };
 
     webrtc.onPeersChange = (activePeers) => {
@@ -378,6 +430,7 @@ export default function App() {
       socket.off('voice:rooms-updated');
       socket.off('chat:message');
       socket.off('voice:peers');
+      socket.off('voice:user-joined');
       socket.off('voice:user-left');
       socket.off('webrtc:offer');
       socket.off('webrtc:answer');
@@ -395,9 +448,25 @@ export default function App() {
       await webrtc.initLocalAudio();
       setActiveVoiceChannel(roomId);
       setActiveTab('voice');
-      socket.emit('voice:join', { roomId });
+
+      // 1. Cloud presence update (Instant broadcast to all users)
+      await realtimeSignaling.setVoiceRoom(roomId);
+
+      // 2. Also emit to socket if connected
+      if (socket && socket.connected) {
+        socket.emit('voice:join', { roomId });
+      }
+
+      // 3. Connect to existing peers in this room via WebRTC!
+      const currentRoomMembers = voiceRooms[roomId] || [];
+      for (const p of currentRoomMembers) {
+        if (p.id && p.id !== currentUser?.id) {
+          console.log('[WebRTC] Calling existing peer in room:', p.username, p.id);
+          await webrtc.createPeerConnection(p.id, true);
+        }
+      }
     } catch (err) {
-      alert('Mikrofon erişimi reddedildi.');
+      alert('Mikrofon erişimi reddedildi: ' + (err.message || ''));
     }
   };
 
@@ -406,16 +475,24 @@ export default function App() {
     setActiveVoiceChannel(null);
     setIsScreenSharing(false);
     setScreenStream(null);
+
+    realtimeSignaling.setVoiceRoom(null);
+
+    if (socket && socket.connected) {
+      socket.emit('voice:leave');
+    }
   };
 
   const handleToggleMute = () => {
     const isMuted = webrtc.toggleMute();
     setCurrentUser(prev => ({ ...prev, isMuted }));
+    realtimeSignaling.setAudioState(isMuted, webrtc.isDeafened);
   };
 
   const handleToggleDeafen = () => {
     const isDeafened = webrtc.toggleDeafen();
     setCurrentUser(prev => ({ ...prev, isDeafened, isMuted: webrtc.isMuted }));
+    realtimeSignaling.setAudioState(webrtc.isMuted, isDeafened);
   };
 
   const handleToggleScreenShare = async () => {
@@ -433,10 +510,33 @@ export default function App() {
   };
 
   const handleSendMessage = (text) => {
-    socket.emit('chat:message', {
+    if (!text || !text.trim()) return;
+
+    const newMsg = {
+      id: `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       channelId: activeTextChannel,
-      text
-    });
+      sender: {
+        id: currentUser?.id,
+        username: currentUser?.username || 'Oyuncu',
+        avatar: currentUser?.avatar || '🎮'
+      },
+      text: text.trim(),
+      timestamp: new Date().toISOString()
+    };
+
+    setMessages(prev => ({
+      ...prev,
+      [activeTextChannel]: [...(prev[activeTextChannel] || []).filter(m => m.id !== newMsg.id), newMsg]
+    }));
+
+    realtimeSignaling.sendChatMessage(newMsg);
+
+    if (socket && socket.connected) {
+      socket.emit('chat:message', {
+        channelId: activeTextChannel,
+        text
+      });
+    }
   };
 
   const handleSignOut = async () => {
