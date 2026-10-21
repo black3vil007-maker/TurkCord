@@ -43,6 +43,79 @@ class WebRTCManager {
     this.peerVolumes = this.loadPeerVolumes();
     this.peerGainNodes = {};
     this.remoteAudioContext = null;
+    this.currentUserId = null;
+
+    // Master Microphone Input & Headphone Output volume controls (0% to 200%)
+    this.inputVolume = Number(localStorage.getItem('turkcord_input_volume') || 100);
+    this.outputVolume = Number(localStorage.getItem('turkcord_output_volume') || 100);
+    this.micGainNode = null;
+    this.keyboardFilterShelf = null;
+  }
+
+  setInputVolume(volumePercent) {
+    const clamped = Math.min(200, Math.max(0, Number(volumePercent) || 0));
+    this.inputVolume = clamped;
+    try { localStorage.setItem('turkcord_input_volume', String(clamped)); } catch (e) {}
+    if (this.micGainNode && this.audioContext) {
+      this.micGainNode.gain.setTargetAtTime(clamped / 100, this.audioContext.currentTime, 0.01);
+    }
+  }
+
+  setOutputVolume(volumePercent) {
+    const clamped = Math.min(200, Math.max(0, Number(volumePercent) || 0));
+    this.outputVolume = clamped;
+    try { localStorage.setItem('turkcord_output_volume', String(clamped)); } catch (e) {}
+    this.updateAllPeerPlayoutVolumes();
+  }
+
+  getEffectivePeerVolume(peerId) {
+    const peerVol = this.peerVolumes[peerId] ?? 100;
+    return Math.round((peerVol * (this.outputVolume / 100)));
+  }
+
+  updateAllPeerPlayoutVolumes() {
+    const isWebAudioActive = this.remoteAudioContext && this.remoteAudioContext.state === 'running';
+    for (const [peerId, gainNode] of Object.entries(this.peerGainNodes)) {
+      const effective = this.getEffectivePeerVolume(peerId);
+      gainNode.gain.value = this.isDeafened ? 0 : (effective / 100);
+    }
+    for (const [peerId, peer] of Object.entries(this.peers)) {
+      if (peer.audioEl) {
+        if (this.isDeafened) {
+          peer.audioEl.muted = true;
+        } else {
+          // Keep audioEl muted if Web Audio is active to eliminate double-play echo!
+          if (isWebAudioActive && this.peerGainNodes[peerId]) {
+            peer.audioEl.muted = true;
+          } else {
+            peer.audioEl.muted = false;
+            peer.audioEl.volume = Math.min(1.0, this.getEffectivePeerVolume(peerId) / 100);
+          }
+        }
+      }
+    }
+  }
+
+  setCurrentUserId(id) {
+    this.currentUserId = id;
+  }
+
+  resumeAudioContexts() {
+    try {
+      if (this.audioContext && this.audioContext.state === 'suspended') {
+        this.audioContext.resume().catch(() => {});
+      }
+      if (this.remoteAudioContext && this.remoteAudioContext.state === 'suspended') {
+        this.remoteAudioContext.resume().catch(() => {});
+      }
+      for (const peer of Object.values(this.peers)) {
+        if (peer.audioEl && peer.audioEl.paused && peer.remoteStream) {
+          peer.audioEl.play().catch(() => {});
+        }
+      }
+    } catch (e) {
+      console.warn('[WebRTC] resumeAudioContexts err:', e);
+    }
   }
 
   loadPeerVolumes() {
@@ -54,26 +127,31 @@ class WebRTCManager {
   }
 
   setPeerVolume(peerId, volumePercent) {
-    const clamped = Math.min(200, Math.max(0, volumePercent));
+    const clamped = Math.min(200, Math.max(0, Number(volumePercent) || 0));
     this.peerVolumes[peerId] = clamped;
     try {
       localStorage.setItem('turkcord_peer_volumes', JSON.stringify(this.peerVolumes));
     } catch (e) {}
 
+    const effective = this.getEffectivePeerVolume(peerId);
+
     // 1. Web Audio Gain Node (supports up to 200% boost!)
     if (this.peerGainNodes[peerId]) {
       this.peerGainNodes[peerId].gain.setTargetAtTime(
-        this.isDeafened ? 0 : (clamped / 100),
+        this.isDeafened ? 0 : (effective / 100),
         this.remoteAudioContext?.currentTime || 0,
         0.01
       );
     }
 
-    // 2. Fallback HTML audio element
+    // 2. Native audio element (only unmuted if Web Audio is not handling this peer)
     const peer = this.peers[peerId];
-    if (peer && peer.audioEl && !this.peerGainNodes[peerId]) {
-      peer.audioEl.volume = Math.min(1.0, clamped / 100);
-      peer.audioEl.muted = this.isDeafened || clamped === 0;
+    if (peer && peer.audioEl) {
+      const isWebAudioActive = this.remoteAudioContext && this.remoteAudioContext.state === 'running';
+      if (!isWebAudioActive || !this.peerGainNodes[peerId]) {
+        peer.audioEl.volume = Math.min(1.0, effective / 100);
+        peer.audioEl.muted = this.isDeafened || effective === 0;
+      }
     }
 
     return clamped;
@@ -85,45 +163,61 @@ class WebRTCManager {
 
   setupPeerAudio(peerId, remoteStream) {
     if (!remoteStream) return;
-    const vol = this.peerVolumes[peerId] ?? 100;
+    const effectiveVol = this.getEffectivePeerVolume(peerId);
+    const peer = this.peers[peerId];
+    if (!peer) return;
 
+    // 1. Ensure peer audioEl is created and attached to DOM
+    let audioEl = peer.audioEl || document.getElementById(`audio-peer-${peerId}`);
+    if (!audioEl) {
+      audioEl = document.createElement('audio');
+      audioEl.id = `audio-peer-${peerId}`;
+      audioEl.autoplay = true;
+      audioEl.playsInline = true;
+      audioEl.style.display = 'none';
+      document.body.appendChild(audioEl);
+      peer.audioEl = audioEl;
+    }
+
+    // Set stream and initial volume directly on audioEl
+    audioEl.srcObject = remoteStream;
+    audioEl.volume = this.isDeafened ? 0 : Math.min(1.0, Math.max(0, effectiveVol / 100));
+
+    // Default to unmuted so voice is ALWAYS audible natively even if AudioContext is suspended
+    audioEl.muted = this.isDeafened;
+    audioEl.play().catch(e => {
+      console.warn('[WebRTC] audioEl waiting for interaction:', e);
+    });
+
+    // 2. Try routing through Web Audio gain node if AudioContext is active
     try {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       if (!this.remoteAudioContext || this.remoteAudioContext.state === 'closed') {
-        this.remoteAudioContext = new AudioCtx({ sampleRate: 48000 });
+        this.remoteAudioContext = new AudioCtx();
       }
       if (this.remoteAudioContext.state === 'suspended') {
         this.remoteAudioContext.resume().catch(() => {});
       }
 
-      if (this.peerGainNodes[peerId]) {
-        try { this.peerGainNodes[peerId].disconnect(); } catch (e) {}
-      }
+      if (this.remoteAudioContext.state === 'running') {
+        if (this.peerGainNodes[peerId]) {
+          try { this.peerGainNodes[peerId].disconnect(); } catch (e) {}
+        }
 
-      const source = this.remoteAudioContext.createMediaStreamSource(remoteStream);
-      const gainNode = this.remoteAudioContext.createGain();
-      gainNode.gain.value = this.isDeafened ? 0 : (vol / 100);
+        const source = this.remoteAudioContext.createMediaStreamSource(remoteStream);
+        const gainNode = this.remoteAudioContext.createGain();
+        gainNode.gain.value = this.isDeafened ? 0 : (effectiveVol / 100);
 
-      source.connect(gainNode);
-      gainNode.connect(this.remoteAudioContext.destination);
-      this.peerGainNodes[peerId] = gainNode;
+        source.connect(gainNode);
+        gainNode.connect(this.remoteAudioContext.destination);
+        this.peerGainNodes[peerId] = gainNode;
 
-      // Keep audioEl muted so sound doesn't play twice
-      const peer = this.peers[peerId];
-      if (peer && peer.audioEl) {
-        peer.audioEl.srcObject = remoteStream;
-        peer.audioEl.muted = true;
-        peer.audioEl.play().catch(() => {});
+        // Since Web Audio is actively streaming to speakers, mute audioEl to prevent duplicate echo
+        audioEl.muted = true;
       }
     } catch (e) {
       console.warn('[WebRTC] Web Audio peer gain fallback to HTMLAudioElement:', e);
-      const peer = this.peers[peerId];
-      if (peer && peer.audioEl) {
-        peer.audioEl.srcObject = remoteStream;
-        peer.audioEl.muted = this.isDeafened;
-        peer.audioEl.volume = Math.min(1.0, Math.max(0, vol / 100));
-        peer.audioEl.play().catch(() => {});
-      }
+      audioEl.muted = this.isDeafened;
     }
   }
 
@@ -162,7 +256,10 @@ class WebRTCManager {
 
     // Live update Web Audio filter & gate
     if (this.highpassFilter) {
-      this.highpassFilter.frequency.value = this.audioSettings.keyboardFilterEnabled !== false ? 110 : 20;
+      this.highpassFilter.frequency.value = this.audioSettings.keyboardFilterEnabled !== false ? 140 : 20;
+    }
+    if (this.keyboardFilterShelf) {
+      this.keyboardFilterShelf.gain.value = this.audioSettings.keyboardFilterEnabled !== false ? -18 : 0;
     }
     if (!this.audioSettings.voiceGateEnabled && this.gateGainNode && this.audioContext) {
       this.gateGainNode.gain.setTargetAtTime(1.0, this.audioContext.currentTime, 0.01);
@@ -186,26 +283,26 @@ class WebRTCManager {
     }
   }
 
-  // Unified signaling dispatcher (both Supabase Realtime Broadcast & Socket.io)
+  // Unified signaling dispatcher: Single authoritative signaling bus
   sendSignal(event, data) {
     if (this.onSignal) {
       try { this.onSignal(event, data); } catch (e) {}
     }
 
-    // 1. Supabase Realtime
-    if (event === 'webrtc:offer') {
-      realtimeSignaling.sendOffer(data.to, data.offer);
-    } else if (event === 'webrtc:answer') {
-      realtimeSignaling.sendAnswer(data.to, data.answer);
-    } else if (event === 'webrtc:ice-candidate') {
-      realtimeSignaling.sendCandidate(data.to, data.candidate);
-    } else if (event === 'voice:speaking') {
-      realtimeSignaling.sendSpeaking(data.isSpeaking);
-    }
-
-    // 2. Socket.io (if connected)
     if (socket && socket.connected) {
+      // Primary: Fast dedicated Socket.io server (<5ms, room-aware)
       socket.emit(event, data);
+    } else {
+      // Fallback: Supabase Realtime when Socket server is not reachable (e.g. serverless)
+      if (event === 'webrtc:offer') {
+        realtimeSignaling.sendOffer(data.to, data.offer);
+      } else if (event === 'webrtc:answer') {
+        realtimeSignaling.sendAnswer(data.to, data.answer);
+      } else if (event === 'webrtc:ice-candidate') {
+        realtimeSignaling.sendCandidate(data.to, data.candidate);
+      } else if (event === 'voice:speaking') {
+        realtimeSignaling.sendSpeaking(data.isSpeaking);
+      }
     }
   }
 
@@ -251,22 +348,34 @@ class WebRTCManager {
       this.analyser.smoothingTimeConstant = 0.2;
       source.connect(this.analyser);
 
-      // 2. High-pass Filter (110Hz): Cuts mechanical switch bottom-out thumps and desk vibrations
+      // 2. High-pass Filter (140Hz): Cuts mechanical switch bottom-out thumps and desk vibrations
       this.highpassFilter = this.audioContext.createBiquadFilter();
       this.highpassFilter.type = 'highpass';
-      this.highpassFilter.frequency.value = this.audioSettings.keyboardFilterEnabled !== false ? 110 : 20;
+      this.highpassFilter.frequency.value = this.audioSettings.keyboardFilterEnabled !== false ? 140 : 20;
       this.highpassFilter.Q.value = 0.7;
 
-      // 3. Hardware Voice Gate: zeros audio volume to 0 during typing/silence
+      // 3. High-shelf Click Filter (4000Hz): Suppresses sharp metallic switch clatter
+      this.keyboardFilterShelf = this.audioContext.createBiquadFilter();
+      this.keyboardFilterShelf.type = 'highshelf';
+      this.keyboardFilterShelf.frequency.value = 4000;
+      this.keyboardFilterShelf.gain.value = this.audioSettings.keyboardFilterEnabled !== false ? -18 : 0;
+
+      // 4. Master Microphone Input Volume Controller (0% to 200%)
+      this.micGainNode = this.audioContext.createGain();
+      this.micGainNode.gain.setValueAtTime(this.inputVolume / 100, this.audioContext.currentTime);
+
+      // 5. Hardware Voice Gate: zeros audio volume to 0 during typing/silence
       this.gateGainNode = this.audioContext.createGain();
       this.gateGainNode.gain.setValueAtTime(0, this.audioContext.currentTime);
 
-      // 4. Output Destination for WebRTC transmission
+      // 6. Output Destination for WebRTC transmission
       this.audioDestination = this.audioContext.createMediaStreamDestination();
 
-      // Pipeline: Source -> Highpass Filter -> Voice Gate -> Destination
+      // Pipeline: Source -> Highpass (Desk rumble cut) -> Highshelf (Switch click cut) -> Mic Gain -> Voice Gate -> Destination
       source.connect(this.highpassFilter);
-      this.highpassFilter.connect(this.gateGainNode);
+      this.highpassFilter.connect(this.keyboardFilterShelf);
+      this.keyboardFilterShelf.connect(this.micGainNode);
+      this.micGainNode.connect(this.gateGainNode);
       this.gateGainNode.connect(this.audioDestination);
 
       this.processedStream = this.audioDestination.stream;
@@ -385,22 +494,32 @@ class WebRTCManager {
 
       this.analyser.getByteFrequencyData(dataArray);
 
-      // Measure human voice formant energy (approx 300Hz - 3400Hz, bins 3 to 36)
-      // This mathematically filters out mechanical key bottom-out thumps (<100Hz) and high metallic clicks (>4000Hz)
+      // Measure human voice formant energy (approx 350Hz - 3000Hz, bins 4 to 32)
+      // This mathematically isolates human vocal cord formants from mechanical keyboard switch transients
       let sum = 0;
       let count = 0;
-      for (let i = 3; i <= 36; i++) {
+      for (let i = 4; i <= 32; i++) {
         sum += dataArray[i];
         count++;
       }
       const voiceEnergy = count > 0 ? (sum / count) : 0;
       const currentLevel = Math.min(100, Math.round(voiceEnergy * 1.5));
 
+      // Measure high-frequency switch clatter (>4000Hz)
+      let clickSum = 0;
+      let clickCount = 0;
+      for (let i = 42; i <= 85; i++) {
+        clickSum += dataArray[i];
+        clickCount++;
+      }
+      const clickEnergy = clickCount > 0 ? (clickSum / clickCount) : 0;
+      const isMechanicalClick = this.audioSettings.keyboardFilterEnabled !== false && clickEnergy > 32 && clickEnergy > (voiceEnergy * 1.4);
+
       const threshold = this.audioSettings.voiceGateEnabled 
         ? (this.audioSettings.voiceGateThreshold || 22)
         : 0;
 
-      const isSpeaking = currentLevel >= threshold;
+      const isSpeaking = currentLevel >= threshold && !isMechanicalClick;
 
       if (this.audioSettings.voiceGateEnabled && this.gateGainNode && this.audioContext) {
         if (isSpeaking) {
@@ -444,7 +563,7 @@ class WebRTCManager {
   async createPeerConnection(peerId, isInitiator) {
     if (this.peers[peerId]) {
       const existingPc = this.peers[peerId].connection;
-      if (existingPc && !['closed', 'failed', 'disconnected'].includes(existingPc.connectionState)) {
+      if (existingPc && !['closed', 'failed', 'disconnected'].includes(existingPc.connectionState) && !isInitiator) {
         return existingPc;
       }
       this.closePeer(peerId);
@@ -470,7 +589,8 @@ class WebRTCManager {
       connection: pc,
       remoteStream,
       audioEl,
-      user: null
+      user: null,
+      pendingCandidates: []
     };
 
     // Add local mic tracks
@@ -492,18 +612,20 @@ class WebRTCManager {
       if (event.track) {
         remoteStream.addTrack(event.track);
 
-        // Track lifecycle: ensure stopped screen shares are immediately purged
+        // Track lifecycle: ensure stopped screen shares are safely purged WITHOUT killing audio
         if (event.track.kind === 'video') {
           const purgeVideoTrack = () => {
             try { remoteStream.removeTrack(event.track); } catch (e) {}
             if (this.onRemoteScreenShareStopped) {
               try { this.onRemoteScreenShareStopped(peerId); } catch (e) {}
             }
+            // CRITICAL: Keep audio flowing through audioEl
+            if (this.peers[peerId]?.audioEl && remoteStream.getAudioTracks().length > 0) {
+              this.peers[peerId].audioEl.srcObject = remoteStream;
+              this.peers[peerId].audioEl.play().catch(() => {});
+            }
+            this.setupPeerAudio(peerId, remoteStream);
             if (this.onPeersChange) {
-              this.peers[peerId] = {
-                ...this.peers[peerId],
-                remoteStream: new MediaStream(remoteStream.getTracks())
-              };
               this.onPeersChange({ ...this.peers });
             }
           };
@@ -523,7 +645,7 @@ class WebRTCManager {
         });
       }
 
-      // If audio track, route through individual volume gain controller
+      // If audio track, route through individual volume gain controller & ensure native play
       if (event.track && event.track.kind === 'audio') {
         this.setupPeerAudio(peerId, remoteStream);
       }
@@ -531,10 +653,6 @@ class WebRTCManager {
       this.optimizePeer(pc);
 
       if (this.onPeersChange) {
-        this.peers[peerId] = {
-          ...this.peers[peerId],
-          remoteStream: new MediaStream(remoteStream.getTracks())
-        };
         this.onPeersChange({ ...this.peers });
       }
     };
@@ -579,7 +697,7 @@ class WebRTCManager {
     return pc;
   }
 
-  // Handle incoming Offer from a peer
+  // Handle incoming Offer from a peer with collision handling and candidate buffer flush
   async handleOffer(peerId, offer) {
     let peer = this.peers[peerId];
     let pc;
@@ -590,43 +708,92 @@ class WebRTCManager {
       pc = peer.connection;
     }
 
-    await pc.setRemoteDescription(new RTCSessionDescription(offer));
-    const answer = await pc.createAnswer();
-    const optimizedAnswerSdp = this.optimizeSdpForGaming(answer.sdp);
-    const optimizedAnswer = new RTCSessionDescription({
-      type: answer.type,
-      sdp: optimizedAnswerSdp
-    });
-    await pc.setLocalDescription(optimizedAnswer);
-    this.optimizePeer(pc);
+    try {
+      // Glare / collision handling: If already in have-local-offer, resolve politely
+      if (pc.signalingState !== 'stable') {
+        const isPolite = (this.currentUserId || '') < (peerId || '');
+        if (isPolite) {
+          try {
+            await pc.setLocalDescription({ type: 'rollback' });
+          } catch (e) {
+            console.warn('[WebRTC] Rollback error:', e);
+          }
+        } else {
+          console.log('[WebRTC] Glare collision ignored (impolite peer)');
+          return;
+        }
+      }
 
-    this.sendSignal('webrtc:answer', {
-      to: peerId,
-      answer: optimizedAnswer
-    });
-  }
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      await this.flushPendingCandidates(peerId);
 
-  // Handle incoming Answer
-  async handleAnswer(peerId, answer) {
-    const peer = this.peers[peerId];
-    if (peer && peer.connection) {
-      await peer.connection.setRemoteDescription(new RTCSessionDescription(answer));
+      const answer = await pc.createAnswer();
+      const optimizedAnswerSdp = this.optimizeSdpForGaming(answer.sdp);
+      const optimizedAnswer = new RTCSessionDescription({
+        type: answer.type,
+        sdp: optimizedAnswerSdp
+      });
+      await pc.setLocalDescription(optimizedAnswer);
+      this.optimizePeer(pc);
+
+      this.sendSignal('webrtc:answer', {
+        to: peerId,
+        answer: optimizedAnswer
+      });
+    } catch (err) {
+      console.error('[WebRTC] handleOffer error for ' + peerId, err);
     }
   }
 
-  // Handle incoming ICE candidate
+  // Handle incoming Answer with candidate buffer flush
+  async handleAnswer(peerId, answer) {
+    const peer = this.peers[peerId];
+    if (peer && peer.connection) {
+      try {
+        if (peer.connection.signalingState === 'have-local-offer') {
+          await peer.connection.setRemoteDescription(new RTCSessionDescription(answer));
+          await this.flushPendingCandidates(peerId);
+        }
+      } catch (err) {
+        console.warn('[WebRTC] handleAnswer error for ' + peerId, err);
+      }
+    }
+  }
+
+  // Flush queued ICE candidates that arrived before remoteDescription
+  async flushPendingCandidates(peerId) {
+    const peer = this.peers[peerId];
+    if (!peer || !peer.connection || !peer.pendingCandidates || peer.pendingCandidates.length === 0) return;
+    const candidates = [...peer.pendingCandidates];
+    peer.pendingCandidates = [];
+    for (const cand of candidates) {
+      try {
+        await peer.connection.addIceCandidate(new RTCIceCandidate(cand));
+      } catch (e) {
+        console.warn('[WebRTC] Error flushing candidate:', e);
+      }
+    }
+  }
+
+  // Handle incoming ICE candidate with buffering
   async handleCandidate(peerId, candidate) {
     const peer = this.peers[peerId];
-    if (peer && peer.connection && peer.connection.remoteDescription) {
+    if (!peer || !peer.connection) return;
+
+    if (peer.connection.remoteDescription && peer.connection.remoteDescription.type) {
       try {
         await peer.connection.addIceCandidate(new RTCIceCandidate(candidate));
       } catch (e) {
         console.warn('[WebRTC] Error adding ice candidate:', e);
       }
+    } else {
+      if (!peer.pendingCandidates) peer.pendingCandidates = [];
+      peer.pendingCandidates.push(candidate);
     }
   }
 
   // Screen sharing toggle with resolution choice (1080p-120, 1080p, 720p, 480p, auto)
+  // Echo cancellation enabled to prevent feedback loops
   async startScreenShare(targetQuality = '1080p-120') {
     let videoConstraints = {
       cursor: 'always'
@@ -652,16 +819,14 @@ class WebRTCManager {
       this.screenStream = await navigator.mediaDevices.getDisplayMedia({
         video: videoConstraints,
         audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-          channelCount: 2
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
         }
       });
 
       const videoTrack = this.screenStream.getVideoTracks()[0];
       if (videoTrack && 'contentHint' in videoTrack) {
-        // 'detail' instructs encoder to preserve sharp text, edges and resolutions without aggressive blurring
         videoTrack.contentHint = 'detail';
       }
 
@@ -716,31 +881,32 @@ class WebRTCManager {
     }
   }
 
-  // Purge remote video tracks when a broadcaster stops sharing (prevents frozen screens)
+  // Purge remote video tracks when a broadcaster stops sharing WITHOUT killing peer audio
   handleRemoteScreenShareEnded(peerId) {
     if (this.onRemoteScreenShareStopped) {
       try { this.onRemoteScreenShareStopped(peerId); } catch (e) {}
     }
 
-    if (peerId && this.peers[peerId]) {
-      const peer = this.peers[peerId];
-      if (peer.remoteStream) {
-        peer.remoteStream.getVideoTracks().forEach(track => {
-          track.stop();
-          try { peer.remoteStream.removeTrack(track); } catch (e) {}
-        });
-        peer.remoteStream = new MediaStream(peer.remoteStream.getTracks());
+    const cleanPeerStream = (peer, id) => {
+      if (!peer || !peer.remoteStream) return;
+      peer.remoteStream.getVideoTracks().forEach(track => {
+        track.stop();
+        try { peer.remoteStream.removeTrack(track); } catch (e) {}
+      });
+
+      // Ensure audio stays attached and actively playing
+      if (peer.audioEl && peer.remoteStream.getAudioTracks().length > 0) {
+        peer.audioEl.srcObject = peer.remoteStream;
+        peer.audioEl.play().catch(() => {});
       }
+      this.setupPeerAudio(id, peer.remoteStream);
+    };
+
+    if (peerId && this.peers[peerId]) {
+      cleanPeerStream(this.peers[peerId], peerId);
     } else {
-      // Purge all remote video tracks
-      Object.values(this.peers).forEach(peer => {
-        if (peer.remoteStream) {
-          peer.remoteStream.getVideoTracks().forEach(track => {
-            track.stop();
-            try { peer.remoteStream.removeTrack(track); } catch (e) {}
-          });
-          peer.remoteStream = new MediaStream(peer.remoteStream.getTracks());
-        }
+      Object.entries(this.peers).forEach(([id, peer]) => {
+        cleanPeerStream(peer, id);
       });
     }
 
@@ -817,8 +983,13 @@ class WebRTCManager {
   }
 
   // Toggle Mute Microphone
-  toggleMute() {
-    this.isMuted = !this.isMuted;
+  toggleMute(targetState = null) {
+    if (typeof targetState === 'boolean') {
+      this.isMuted = targetState;
+    } else {
+      this.isMuted = !this.isMuted;
+    }
+
     if (this.gateGainNode && this.audioContext) {
       this.gateGainNode.gain.setTargetAtTime(this.isMuted ? 0 : 1.0, this.audioContext.currentTime, 0.01);
     }
@@ -832,33 +1003,31 @@ class WebRTCManager {
         track.enabled = !this.isMuted;
       });
     }
-    socket.emit('voice:state', { isMuted: this.isMuted });
+    if (this.localStream) {
+      this.localStream.getAudioTracks().forEach(track => {
+        track.enabled = !this.isMuted;
+      });
+    }
+
+    this.sendSignal('voice:state', { isMuted: this.isMuted });
     return this.isMuted;
   }
 
-  // Toggle Deafen (Mutes incoming audio and self microphone)
+  // Toggle Deafen (Mutes incoming audio and self microphone without echo)
   toggleDeafen() {
     this.isDeafened = !this.isDeafened;
     
     // If deafened, also auto-mute microphone like Discord
     if (this.isDeafened && !this.isMuted) {
-      this.toggleMute();
+      this.toggleMute(true);
     } else if (!this.isDeafened && this.isMuted) {
-      this.toggleMute();
+      this.toggleMute(false);
     }
 
-    // Mute/unmute all peer audio elements and Web Audio gain nodes
-    for (const [peerId, gainNode] of Object.entries(this.peerGainNodes)) {
-      const vol = this.peerVolumes[peerId] ?? 100;
-      gainNode.gain.value = this.isDeafened ? 0 : (vol / 100);
-    }
-    for (const peer of Object.values(this.peers)) {
-      if (peer.audioEl) {
-        peer.audioEl.muted = this.isDeafened;
-      }
-    }
+    // Safely update all peer playout nodes without double-play echo
+    this.updateAllPeerPlayoutVolumes();
 
-    socket.emit('voice:state', { isDeafened: this.isDeafened, isMuted: this.isMuted });
+    this.sendSignal('voice:state', { isDeafened: this.isDeafened, isMuted: this.isMuted });
     return this.isDeafened;
   }
 
@@ -883,8 +1052,8 @@ class WebRTCManager {
     }
   }
 
-  // Leave voice room completely
-  leaveRoom() {
+  // Leave voice room (pass keepLocalAudio = true when switching rooms to keep microphone active without latency)
+  leaveRoom(keepLocalAudio = false) {
     this.stopScreenShare();
 
     for (const peerId of Object.keys(this.peers)) {
@@ -896,34 +1065,36 @@ class WebRTCManager {
     }
     this.peerGainNodes = {};
 
-    if (this.remoteAudioContext && this.remoteAudioContext.state !== 'closed') {
-      try { this.remoteAudioContext.close(); } catch (e) {}
-      this.remoteAudioContext = null;
-    }
+    if (!keepLocalAudio) {
+      if (this.remoteAudioContext && this.remoteAudioContext.state !== 'closed') {
+        try { this.remoteAudioContext.close(); } catch (e) {}
+        this.remoteAudioContext = null;
+      }
 
-    if (this.vadInterval) {
-      clearInterval(this.vadInterval);
-      this.vadInterval = null;
-    }
+      if (this.vadInterval) {
+        clearInterval(this.vadInterval);
+        this.vadInterval = null;
+      }
 
-    if (this.rawStream) {
-      this.rawStream.getTracks().forEach(t => t.stop());
-      this.rawStream = null;
-    }
+      if (this.rawStream) {
+        this.rawStream.getTracks().forEach(t => t.stop());
+        this.rawStream = null;
+      }
 
-    if (this.processedStream) {
-      this.processedStream.getTracks().forEach(t => t.stop());
-      this.processedStream = null;
-    }
+      if (this.processedStream) {
+        this.processedStream.getTracks().forEach(t => t.stop());
+        this.processedStream = null;
+      }
 
-    if (this.localStream) {
-      this.localStream.getTracks().forEach(t => t.stop());
-      this.localStream = null;
-    }
+      if (this.localStream) {
+        this.localStream.getTracks().forEach(t => t.stop());
+        this.localStream = null;
+      }
 
-    if (this.audioContext && this.audioContext.state !== 'closed') {
-      try { this.audioContext.close(); } catch (e) {}
-      this.audioContext = null;
+      if (this.audioContext && this.audioContext.state !== 'closed') {
+        try { this.audioContext.close(); } catch (e) {}
+        this.audioContext = null;
+      }
     }
 
     socket.emit('voice:leave');
@@ -986,16 +1157,23 @@ class WebRTCManager {
       analyser.smoothingTimeConstant = 0.2;
       source.connect(analyser);
 
-      // 2. Highpass filter: cuts keyboard desk vibrations (< 110Hz)
+      // 2. Highpass filter: cuts keyboard desk vibrations (< 140Hz)
       const highpass = testCtx.createBiquadFilter();
       highpass.type = 'highpass';
-      highpass.frequency.value = this.audioSettings.keyboardFilterEnabled !== false ? 110 : 20;
+      highpass.frequency.value = this.audioSettings.keyboardFilterEnabled !== false ? 140 : 20;
       source.connect(highpass);
+
+      // 2b. Highshelf filter: cuts switch clicks
+      const highshelf = testCtx.createBiquadFilter();
+      highshelf.type = 'highshelf';
+      highshelf.frequency.value = 4000;
+      highshelf.gain.value = this.audioSettings.keyboardFilterEnabled !== false ? -18 : 0;
+      highpass.connect(highshelf);
 
       // 3. Test Gate
       const testGate = testCtx.createGain();
       testGate.gain.setValueAtTime(0, testCtx.currentTime);
-      highpass.connect(testGate);
+      highshelf.connect(testGate);
 
       // 4. Connect to headphones so user can verify gating with their own ears
       const monitorGain = testCtx.createGain();

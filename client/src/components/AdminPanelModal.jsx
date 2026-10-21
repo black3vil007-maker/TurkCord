@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../services/supabase';
+import UserAvatar from './UserAvatar';
 import { 
   ShieldAlert, 
   X, 
@@ -168,8 +169,8 @@ export default function AdminPanelModal({
               >
                 {/* User Info */}
                 <div className="flex items-center space-x-3 truncate">
-                  <div className="relative flex-shrink-0">
-                    <span className="text-2xl">{profile.avatar || '🎮'}</span>
+                  <div className="relative flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center">
+                    <UserAvatar avatar={profile.avatar} className="w-8 h-8 rounded-full border border-white/10" textClassName="text-2xl" />
                     <span className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-[#161b22] ${
                       isOnline ? 'bg-emerald-400 shadow-[0_0_8px_#34d399]' : 'bg-[#484f58]'
                     }`} />

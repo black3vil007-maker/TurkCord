@@ -17,29 +17,38 @@
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
     <script>
-      // Register Service Worker for PWA Desktop Installability with automatic update checking
+      // If running on localhost / development, unregister any active Service Workers so they never intercept Vite dev server
       if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js').then((reg) => {
-            console.log('[PWA] Service Worker registered with scope:', reg.scope);
-            // Check for updates on every page load
-            try { reg.update(); } catch (e) {}
-
-            reg.onupdatefound = () => {
-              const installingWorker = reg.installing;
-              if (installingWorker) {
-                installingWorker.onstatechange = () => {
-                  if (installingWorker.state === 'installed' && navigator.serviceWorker.controller) {
-                    console.log('[PWA] New version ready, refreshing...');
-                    window.location.reload();
-                  }
-                };
-              }
-            };
-          }).catch((err) => {
-            console.warn('[PWA] Service Worker registration failed:', err);
+        if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+          navigator.serviceWorker.getRegistrations().then((registrations) => {
+            for (let registration of registrations) {
+              registration.unregister();
+              console.log('[Dev] Unregistered active Service Worker on localhost');
+            }
           });
-        });
+          if ('caches' in window) {
+            caches.keys().then((names) => {
+              for (let name of names) caches.delete(name);
+            });
+          }
+        } else {
+          // Register Service Worker for PWA Desktop Installability in production
+          window.addEventListener('load', () => {
+            navigator.serviceWorker.register('/sw.js').then((reg) => {
+              try { reg.update(); } catch (e) {}
+              reg.onupdatefound = () => {
+                const installingWorker = reg.installing;
+                if (installingWorker) {
+                  installingWorker.onstatechange = () => {
+                    if (installingWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                      window.location.reload();
+                    }
+                  };
+                }
+              };
+            }).catch(() => {});
+          });
+        }
       }
     </script>
   </body>

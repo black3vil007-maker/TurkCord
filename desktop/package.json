@@ -1,0 +1,43 @@
+{
+  "name": "turkcord-desktop",
+  "version": "1.0.1",
+  "description": "TurkCord - eSports Düşük Gecikmeli WebRTC Ses ve Sohbet Masaüstü Uygulaması",
+  "main": "main.js",
+  "author": "TurkCord Team",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis"
+  },
+  "build": {
+    "appId": "com.turkcord.app",
+    "productName": "TurkCord",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "TurkCord",
+      "artifactName": "TurkCord-Setup.${ext}"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "icon.png",
+      "app/**/*"
+    ]
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  }
+}

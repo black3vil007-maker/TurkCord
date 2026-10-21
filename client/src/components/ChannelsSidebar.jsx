@@ -13,6 +13,7 @@ import {
   Sparkles,
   Gamepad
 } from 'lucide-react';
+import UserAvatar from './UserAvatar';
 
 export default function ChannelsSidebar({
   channels,
@@ -75,7 +76,6 @@ export default function ChannelsSidebar({
           <div>
             <div className="px-2 mb-1 flex items-center justify-between text-[11px] font-bold text-tc-muted uppercase tracking-wider">
               <span>Ses Kanalları</span>
-              <span className="text-[10px] text-tc-green font-normal">Sıfır Gecikme</span>
             </div>
 
             <div className="space-y-1">
@@ -98,9 +98,16 @@ export default function ChannelsSidebar({
                         <span className="truncate">{v.name}</span>
                       </div>
 
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-tc-card text-tc-muted font-mono">
-                        {connectedUsers.length}/{v.limit}
-                      </span>
+                      <div className="flex items-center space-x-1.5">
+                        {v.limit > 0 && connectedUsers.length >= v.limit && (
+                          <span className="text-[9px] px-1.5 py-0.2 rounded-md bg-rose-500/20 text-rose-400 font-bold border border-rose-500/30">
+                            DOLU
+                          </span>
+                        )}
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-tc-card text-tc-muted font-mono">
+                          {connectedUsers.length}/{v.limit}
+                        </span>
+                      </div>
                     </button>
 
                     {/* Connected Users inside channel */}
@@ -121,10 +128,10 @@ export default function ChannelsSidebar({
                               }`}
                             >
                               <div className="flex items-center space-x-2 truncate">
-                                <span className={`text-base p-0.5 rounded-full border-2 transition-transform ${
+                                <span className={`w-5 h-5 rounded-full flex items-center justify-center border transition-transform ${
                                   isSpeaking ? 'border-tc-green scale-110' : 'border-transparent'
                                 }`}>
-                                  {u.avatar || '🎮'}
+                                  <UserAvatar avatar={u.avatar} className="w-5 h-5 rounded-full" textClassName="text-base" />
                                 </span>
                                 <span className="truncate">
                                   {u.username} {isSelf && '(Sen)'}
@@ -198,8 +205,8 @@ export default function ChannelsSidebar({
             onClick={onOpenSettings}
             className="flex items-center space-x-2 p-1 rounded-lg hover:bg-tc-card cursor-pointer transition max-w-[125px]"
           >
-            <div className="relative">
-              <span className="text-2xl">{currentUser?.avatar || '🎮'}</span>
+            <div className="relative w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0">
+              <UserAvatar avatar={currentUser?.avatar} className="w-7 h-7 rounded-full border border-tc-border" textClassName="text-2xl" />
               <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-tc-green border-2 border-tc-sidebar" />
             </div>
             <div className="truncate">

@@ -36,13 +36,18 @@ import {
   Clock,
   ShieldAlert,
   UserMinus,
-  Ban
+  Ban,
+  Bell,
+  BellOff,
+  Smile,
+  Image as ImageIcon
 } from 'lucide-react';
 import AuthModal from './components/AuthModal';
 import FriendsPanel from './components/FriendsPanel';
 import SettingsModal from './components/SettingsModal';
 import AdminPanelModal from './components/AdminPanelModal';
 import TurkCordLogo from './components/TurkCordLogo';
+import UserAvatar from './components/UserAvatar';
 import { realtimeSignaling } from './services/realtimeSignaling';
 
 const DEFAULT_FALLBACK_VOICE_ROOMS = [
@@ -52,9 +57,24 @@ const DEFAULT_FALLBACK_VOICE_ROOMS = [
 ];
 
 const DEFAULT_FALLBACK_TEXT_CHANNELS = [
-  { id: 'genel', name: 'genel-sohbet' },
-  { id: 'oyunlar', name: 'oyun-sohbet' }
+  { id: 'genel', name: 'genel-sohbet', description: 'Sunucudaki herkesin genel sohbet kanalı' },
+  { id: 'oyunlar', name: 'oyun-sohbet', description: 'Oyun içi stratejiler ve sohbet' }
 ];
+
+const loadCustomTextChannels = () => {
+  try {
+    const saved = localStorage.getItem('turkcord_custom_text_channels');
+    if (saved) return JSON.parse(saved);
+  } catch (e) {}
+  return [];
+};
+
+const saveCustomTextChannels = (channelsList) => {
+  try {
+    const customOnly = (channelsList || []).filter(c => c.id !== 'genel' && c.id !== 'oyunlar');
+    localStorage.setItem('turkcord_custom_text_channels', JSON.stringify(customOnly));
+  } catch (e) {}
+};
 
 export default function App() {
   const [session, setSession] = useState(null);
@@ -66,10 +86,22 @@ export default function App() {
   const [isForceMuted, setIsForceMuted] = useState(false);
   const [adminNoticeModal, setAdminNoticeModal] = useState(null);
   const [activeTab, setActiveTab] = useState('voice'); // 'voice', 'chat', 'friends'
-  const [channels, setChannels] = useState({ text: DEFAULT_FALLBACK_TEXT_CHANNELS, voice: DEFAULT_FALLBACK_VOICE_ROOMS });
+  const [channels, setChannels] = useState(() => ({
+    text: [
+      ...DEFAULT_FALLBACK_TEXT_CHANNELS,
+      ...loadCustomTextChannels().filter(c => c.id !== 'genel' && c.id !== 'oyunlar')
+    ],
+    voice: DEFAULT_FALLBACK_VOICE_ROOMS
+  }));
   const [activeTextChannel, setActiveTextChannel] = useState('genel');
   const [activeVoiceChannel, setActiveVoiceChannel] = useState(null);
+  const [selectedVoiceRoomId, setSelectedVoiceRoomId] = useState(null);
   const [messages, setMessages] = useState({});
+  const [unreadCounts, setUnreadCounts] = useState({});
+  const totalUnreadChatCount = Object.values(unreadCounts || {}).reduce((acc, c) => acc + (Number(c) || 0), 0);
+  const [showCreateTextModal, setShowCreateTextModal] = useState(false);
+  const [newTextName, setNewTextName] = useState('');
+  const [newTextDesc, setNewTextDesc] = useState('');
   const [allUsers, setAllUsers] = useState([]);
   const [voiceRooms, setVoiceRooms] = useState({});
   const [speakingUsers, setSpeakingUsers] = useState({});
@@ -84,11 +116,71 @@ export default function App() {
 
   // References to track room members and trigger join/leave sounds
   const activeVoiceChannelRef = useRef(activeVoiceChannel);
+  const activeTabRef = useRef(activeTab);
+  const activeTextChannelRef = useRef(activeTextChannel);
+  const currentUserRef = useRef(currentUser);
   const prevRoomMembersRef = useRef(new Set());
 
   useEffect(() => {
     activeVoiceChannelRef.current = activeVoiceChannel;
   }, [activeVoiceChannel]);
+
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+
+  useEffect(() => {
+    activeTextChannelRef.current = activeTextChannel;
+  }, [activeTextChannel]);
+
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
+
+  // Unified incoming chat message handler with strict duplicate prevention
+  const handleIncomingChatMessage = (newMsg) => {
+    if (!newMsg || !newMsg.channelId) return;
+
+    setMessages(prev => {
+      const channelMsgs = prev[newMsg.channelId] || [];
+
+      // 1. If message with exact id already exists, update/preserve it
+      const existingIdx = channelMsgs.findIndex(m => m.id === newMsg.id);
+      if (existingIdx !== -1) {
+        const next = [...channelMsgs];
+        next[existingIdx] = newMsg;
+        return { ...prev, [newMsg.channelId]: next };
+      }
+
+      // 2. Strong duplicate check: Same sender + same text + same image within 3.5 seconds
+      const isDuplicate = channelMsgs.some(m =>
+        m.sender?.id === newMsg.sender?.id &&
+        m.text === newMsg.text &&
+        m.image === newMsg.image &&
+        Math.abs(new Date(m.timestamp || 0).getTime() - new Date(newMsg.timestamp || 0).getTime()) < 3500
+      );
+
+      if (isDuplicate) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        [newMsg.channelId]: [...channelMsgs, newMsg]
+      };
+    });
+
+    // Sound chime and unread badge only for OTHER users' messages
+    if (newMsg.sender?.id !== currentUserRef.current?.id) {
+      soundEffects.playMessageChime();
+      if (activeTabRef.current !== 'chat' || activeTextChannelRef.current !== newMsg.channelId) {
+        setUnreadCounts(prev => ({
+          ...prev,
+          [newMsg.channelId]: (prev[newMsg.channelId] || 0) + 1
+        }));
+      }
+    }
+  };
 
   // Create room modal / form state
   const [showCreateRoom, setShowCreateRoom] = useState(false);
@@ -131,7 +223,12 @@ export default function App() {
     }
   };
 
-  // PWA Desktop Application Installation States
+  // Desktop Application / PWA Detection
+  const isDesktopApp = typeof window !== 'undefined' && (
+    Boolean(window.electronAPI?.isElectron) ||
+    window.navigator.userAgent.includes('Electron') ||
+    window.navigator.userAgent.includes('TurkCord')
+  );
   const [deferredPrompt, setDeferredPrompt] = useState(null);
   const [isStandaloneApp, setIsStandaloneApp] = useState(false);
   const [showInstallGuideModal, setShowInstallGuideModal] = useState(false);
@@ -161,17 +258,8 @@ export default function App() {
     };
   }, []);
 
-  const handleInstallApp = async () => {
-    if (deferredPrompt) {
-      deferredPrompt.prompt();
-      const choice = await deferredPrompt.userChoice;
-      if (choice && choice.outcome === 'accepted') {
-        setIsStandaloneApp(true);
-      }
-      setDeferredPrompt(null);
-    } else {
-      setShowInstallGuideModal(true);
-    }
+  const handleInstallApp = () => {
+    setShowInstallGuideModal(true);
   };
 
   const parseRoomData = (r) => {
@@ -330,6 +418,7 @@ export default function App() {
           });
         }
       } else {
+        soundEffects.playMessageChime();
         setPendingSentRequests(prev => new Set(prev).add(targetUser.id));
         setRoomEventToast({
           type: 'join',
@@ -350,30 +439,51 @@ export default function App() {
     }
   };
 
-  // 1. Check Supabase Auth Session
+  // 1. Check Supabase Auth Session with Safety Timeout
   useEffect(() => {
+    let isMounted = true;
+
+    // Safety fallback: Never stay stuck on blue loading screen longer than 1500ms
+    const safetyTimeout = setTimeout(() => {
+      if (isMounted) {
+        setIsAuthLoading(false);
+      }
+    }, 1500);
+
     supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
+      if (!isMounted) return;
       setSession(currentSession);
       if (currentSession?.user) {
-        loadUserProfile(currentSession.user).finally(() => setIsAuthLoading(false));
+        loadUserProfile(currentSession.user).finally(() => {
+          if (isMounted) setIsAuthLoading(false);
+        });
       } else {
         setIsAuthLoading(false);
       }
     }).catch(() => {
-      setIsAuthLoading(false);
+      if (isMounted) setIsAuthLoading(false);
+    }).finally(() => {
+      clearTimeout(safetyTimeout);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, currentSession) => {
+      if (!isMounted) return;
       setSession(currentSession);
       if (currentSession?.user) {
-        loadUserProfile(currentSession.user).finally(() => setIsAuthLoading(false));
+        loadUserProfile(currentSession.user).finally(() => {
+          if (isMounted) setIsAuthLoading(false);
+        });
       } else {
         setCurrentUser(null);
         setIsAuthLoading(false);
       }
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      isMounted = false;
+      clearTimeout(safetyTimeout);
+      subscription.unsubscribe();
+    };
   }, []);
 
   function hashCode(str) {
@@ -518,14 +628,33 @@ export default function App() {
   // Listen for realtime friendship changes for current user
   useEffect(() => {
     if (!currentUser?.id) return;
+    webrtc.setCurrentUserId(currentUser.id);
     loadPendingFriendCount(currentUser.id);
     loadFriendsData(currentUser.id);
 
     const fChannel = supabase
       .channel(`public:friendships-count-${currentUser.id}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'friendships' }, () => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'friendships' }, (payload) => {
         loadPendingFriendCount(currentUser.id);
         loadFriendsData(currentUser.id);
+
+        if (payload?.eventType === 'INSERT' && payload.new?.friend_id === currentUser.id && payload.new?.status === 'pending') {
+          soundEffects.playMessageChime();
+          setIncomingFriendToast({
+            type: 'request',
+            text: 'Yeni bir arkadaşlık isteğiniz var! 🔔',
+            fromUser: null
+          });
+          setTimeout(() => setIncomingFriendToast(null), 8000);
+        } else if (payload?.eventType === 'UPDATE' && payload.new?.status === 'accepted' && (payload.new?.user_id === currentUser.id || payload.new?.friend_id === currentUser.id)) {
+          soundEffects.playMessageChime();
+          setIncomingFriendToast({
+            type: 'accepted',
+            text: 'Arkadaşlık isteği kabul edildi! 🎉',
+            fromUser: null
+          });
+          setTimeout(() => setIncomingFriendToast(null), 8000);
+        }
       })
       .subscribe();
 
@@ -785,16 +914,19 @@ export default function App() {
     };
 
     realtimeSignaling.onOffer = async (fromId, offer) => {
+      if (socket && socket.connected) return;
       console.log('[Realtime] Incoming WebRTC offer from:', fromId);
       await webrtc.handleOffer(fromId, offer);
     };
 
     realtimeSignaling.onAnswer = async (fromId, answer) => {
+      if (socket && socket.connected) return;
       console.log('[Realtime] Incoming WebRTC answer from:', fromId);
       await webrtc.handleAnswer(fromId, answer);
     };
 
     realtimeSignaling.onCandidate = async (fromId, candidate) => {
+      if (socket && socket.connected) return;
       await webrtc.handleCandidate(fromId, candidate);
     };
 
@@ -803,10 +935,42 @@ export default function App() {
     };
 
     realtimeSignaling.onChatMessage = (newMsg) => {
+      // If socket is active, socket handles chat delivery to avoid duplicate messages across networks
+      if (socket && socket.connected) return;
+      handleIncomingChatMessage(newMsg);
+    };
+
+    realtimeSignaling.onChatClear = (channelId) => {
       setMessages(prev => ({
         ...prev,
-        [newMsg.channelId]: [...(prev[newMsg.channelId] || []).filter(m => m.id !== newMsg.id), newMsg]
+        [channelId]: []
       }));
+    };
+
+    realtimeSignaling.onTextChannelUpdated = (newChan) => {
+      setChannels(prev => {
+        if (prev.text.some(c => c.id === newChan.id)) return prev;
+        const updated = {
+          ...prev,
+          text: [...prev.text, newChan]
+        };
+        saveCustomTextChannels(updated.text);
+        return updated;
+      });
+    };
+
+    realtimeSignaling.onTextChannelDeleted = (channelId) => {
+      setChannels(prev => {
+        const updated = {
+          ...prev,
+          text: prev.text.filter(c => c.id !== channelId)
+        };
+        saveCustomTextChannels(updated.text);
+        return updated;
+      });
+      if (activeTextChannelRef.current === channelId) {
+        setActiveTextChannel('genel');
+      }
     };
 
     realtimeSignaling.onRoomUpdated = (updatedRoom) => {
@@ -891,7 +1055,7 @@ export default function App() {
         voice: mergeVoiceChannels(prev.voice, state.channels?.voice)
       }));
       setAllUsers(state.users);
-      setVoiceRooms(prev => ({ ...state.voiceRooms, ...prev }));
+      setVoiceRooms(state.voiceRooms || {});
       setMessages(state.messages || {});
     });
 
@@ -923,10 +1087,11 @@ export default function App() {
     });
 
     socket.on('friend:request-received', ({ fromUser }) => {
+      soundEffects.playMessageChime();
       setPendingFriendCount(prev => prev + 1);
       setIncomingFriendToast({
         type: 'request',
-        text: `${fromUser.username} size arkadaşlık isteği gönderdi!`,
+        text: `${fromUser.username} size arkadaşlık isteği gönderdi! 🔔`,
         fromUser
       });
       setTimeout(() => setIncomingFriendToast(null), 8000);
@@ -934,6 +1099,8 @@ export default function App() {
 
     socket.on('friend:respond-received', ({ fromUser, accepted }) => {
       if (accepted) {
+        soundEffects.playMessageChime();
+        if (currentUser?.id) loadFriendsData(currentUser.id);
         setIncomingFriendToast({
           type: 'accepted',
           text: `${fromUser.username} arkadaşlık isteğinizi kabul etti! 🎉`,
@@ -944,13 +1111,17 @@ export default function App() {
     });
 
     socket.on('voice:rooms-updated', (roomsData) => {
-      setVoiceRooms(prev => ({ ...roomsData, ...prev }));
+      setVoiceRooms(roomsData || {});
     });
 
     socket.on('chat:message', (newMsg) => {
+      handleIncomingChatMessage(newMsg);
+    });
+
+    socket.on('chat:clear', ({ channelId }) => {
       setMessages(prev => ({
         ...prev,
-        [newMsg.channelId]: [...(prev[newMsg.channelId] || []).filter(m => m.id !== newMsg.id), newMsg]
+        [channelId]: []
       }));
     });
 
@@ -983,6 +1154,16 @@ export default function App() {
         delete copy[peerId];
         return copy;
       });
+    });
+
+    socket.on('voice:force-leave', ({ reason }) => {
+      console.log('[Voice] Force-leave received:', reason);
+      handleLeaveVoice();
+      setRoomEventToast({
+        type: 'leave',
+        text: reason || 'Hesabınız başka bir cihazdan ses odasına bağlandı.'
+      });
+      setTimeout(() => setRoomEventToast(null), 5000);
     });
 
     socket.on('voice:screenshare-updated', ({ peerId, isSharing }) => {
@@ -1085,6 +1266,7 @@ export default function App() {
       socket.off('voice:peers');
       socket.off('voice:user-joined');
       socket.off('voice:user-left');
+      socket.off('voice:force-leave');
       socket.off('webrtc:offer');
       socket.off('webrtc:answer');
       socket.off('webrtc:ice-candidate');
@@ -1101,46 +1283,104 @@ export default function App() {
       return;
     }
 
-    // Odadan odaya geçerken eski odadaki bağlantıları ve varlığı eksiksiz temizle
-    if (activeVoiceChannel) {
-      console.log('[Voice] Leaving current voice room before switching:', activeVoiceChannel);
-      handleLeaveVoice();
-      await new Promise(r => setTimeout(r, 200));
+    const previousRoomId = activeVoiceChannel;
+    const isSwitching = Boolean(previousRoomId);
+
+    // 1. Önceki odadan kesin ve anında çıkış yap:
+    if (isSwitching) {
+      console.log('[Voice] Exiting previous room:', previousRoomId);
+      webrtc.leaveRoom(true); // eski peer'ları kapat, mikrofonu hazır tut
+      prevRoomMembersRef.current = new Set();
+      
+      // Önceki odadaki varlığımızı anında temizle
+      setVoiceRooms(prev => {
+        const copy = { ...prev };
+        if (copy[previousRoomId]) {
+          copy[previousRoomId] = copy[previousRoomId].filter(u => 
+            u.id !== currentUser?.id && u.socketId !== socket?.id
+          );
+        }
+        return copy;
+      });
+
+      if (socket && socket.connected) {
+        socket.emit('voice:leave');
+      }
+      realtimeSignaling.setVoiceRoom(null);
+    }
+    soundEffects.playSelfJoin();
+
+    // Oda kişi sınırı (Limit) kontrolü
+    const targetRoom = (channels.voice || []).find(c => c.id === roomId);
+    const existingInRoom = voiceRooms[roomId] || [];
+    const roomLimit = Number(targetRoom?.limit_count || targetRoom?.limit || 0);
+
+    const isAlreadyInRoom = existingInRoom.some(u => u.id === currentUser?.id);
+    if (!isAlreadyInRoom && roomLimit > 0 && existingInRoom.length >= roomLimit) {
+      soundEffects.playUserLeft();
+      setAdminNoticeModal({
+        title: 'Oda Dolu (Limit Aşıldı)',
+        message: `"${targetRoom?.name || 'Bu oda'}" için belirlenen maksimum kişi sınırına (${existingInRoom.length}/${roomLimit}) ulaşıldı. Lütfen başka bir ses odasına katılın veya limitin boşalmasını bekleyin.`,
+        icon: '🚫'
+      });
+      return;
     }
 
     try {
-      soundEffects.playSelfJoin();
+      if (currentUser?.id) {
+        webrtc.setCurrentUserId(currentUser.id);
+      }
+      await webrtc.initLocalAudio();
+      webrtc.resumeAudioContexts();
+
+      setActiveVoiceChannel(roomId);
+      setSelectedVoiceRoomId(roomId);
+      setActiveTab('voice');
+      setIsScreenSharing(false);
+      setScreenStream(null);
+      setEndedBroadcast(null);
+
+      // Yeni odaya anında eklendiğini göster (anlık UI yanıtı)
+      if (currentUser) {
+        setVoiceRooms(prev => {
+          const copy = { ...prev };
+          const existing = (copy[roomId] || []).filter(u => u.id !== currentUser?.id && u.socketId !== socket?.id);
+          copy[roomId] = [...existing, {
+            id: currentUser.id,
+            username: currentUser.username,
+            avatar: currentUser.avatar,
+            socketId: socket?.id
+          }];
+          return copy;
+        });
+      }
 
       // Seed initial room members so we don't trigger "user joined" for existing occupants
-      const existingInRoom = voiceRooms[roomId] || [];
-      const initialIds = new Set(existingInRoom.map(u => u.id));
+      const currentOccupants = voiceRooms[roomId] || [];
+      const initialIds = new Set(currentOccupants.map(u => u.id));
       if (currentUser?.id) initialIds.add(currentUser.id);
       prevRoomMembersRef.current = initialIds;
 
-      await webrtc.initLocalAudio();
-      setActiveVoiceChannel(roomId);
-      setActiveTab('voice');
-
-      // 1. Cloud presence update (Instant broadcast to all users)
+      // 1. Cloud presence update
       await realtimeSignaling.setVoiceRoom(roomId);
 
-      // 2. Also emit to socket if connected
+      // 2. Ses odası bağlantısı: Socket.io aktifse Socket sinyali üzerinden peers listesiyle tekil bağlantı kurulur
       if (socket && socket.connected) {
-        socket.emit('voice:join', { roomId });
-      }
-
-      // 3. Connect to existing peers in this room via WebRTC!
-      const currentRoomMembers = voiceRooms[roomId] || [];
-      for (const p of currentRoomMembers) {
-        if (p.id && p.id !== currentUser?.id) {
-          console.log('[WebRTC] Calling existing peer in room:', p.username, p.id);
-          if (webrtc.peers[p.id]) {
-            webrtc.closePeer(p.id);
+        socket.emit('voice:join', { roomId, user: currentUser });
+      } else {
+        // Yalnızca Socket sunucusu yoksa (Vercel serverless fallback) Realtime döngüsüyle bağlan
+        for (const p of currentOccupants) {
+          if (p.id && p.id !== currentUser?.id) {
+            console.log('[WebRTC Fallback] Calling existing peer via Realtime:', p.username, p.id);
+            if (webrtc.peers[p.id]) {
+              webrtc.closePeer(p.id);
+            }
+            await webrtc.createPeerConnection(p.id, true);
           }
-          await webrtc.createPeerConnection(p.id, true);
         }
       }
     } catch (err) {
+      console.error('[Voice] Error joining room:', err);
       alert('Mikrofon erişimi reddedildi: ' + (err.message || ''));
     }
   };
@@ -1148,11 +1388,23 @@ export default function App() {
   const handleLeaveVoice = () => {
     soundEffects.playSelfLeave();
     prevRoomMembersRef.current = new Set();
-    webrtc.leaveRoom();
+    webrtc.leaveRoom(false); // keepLocalAudio = false (fully turns off microphone hardware)
+    const prevRoom = activeVoiceChannel;
     setActiveVoiceChannel(null);
     setIsScreenSharing(false);
     setScreenStream(null);
     setEndedBroadcast(null);
+
+    // Ayrılan kullanıcıyı yerel oda listesinden anında sil
+    if (prevRoom) {
+      setVoiceRooms(prev => {
+        const copy = { ...prev };
+        if (copy[prevRoom]) {
+          copy[prevRoom] = copy[prevRoom].filter(u => u.id !== currentUser?.id && u.socketId !== socket?.id);
+        }
+        return copy;
+      });
+    }
 
     realtimeSignaling.setVoiceRoom(null);
 
@@ -1216,33 +1468,124 @@ export default function App() {
     }
   };
 
-  const handleSendMessage = (text) => {
-    if (!text || !text.trim()) return;
+  const handleSendMessage = (text, image = null) => {
+    if ((!text || !text.trim()) && !image) return;
+
+    const trimmedText = (text || '').trim();
+    const msgId = `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
 
     const newMsg = {
-      id: `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      id: msgId,
       channelId: activeTextChannel,
       sender: {
         id: currentUser?.id,
         username: currentUser?.username || 'Oyuncu',
         avatar: currentUser?.avatar || '🎮'
       },
-      text: text.trim(),
+      text: trimmedText,
+      image: image || null,
       timestamp: new Date().toISOString()
     };
 
-    setMessages(prev => ({
-      ...prev,
-      [activeTextChannel]: [...(prev[activeTextChannel] || []).filter(m => m.id !== newMsg.id), newMsg]
-    }));
+    // Optimistically add to UI with deduplication guard
+    handleIncomingChatMessage(newMsg);
 
-    realtimeSignaling.sendChatMessage(newMsg);
-
+    // Transmit to network (Single Source of Truth)
     if (socket && socket.connected) {
       socket.emit('chat:message', {
+        id: msgId,
         channelId: activeTextChannel,
-        text
+        text: trimmedText,
+        image: image || null
       });
+    } else {
+      realtimeSignaling.sendChatMessage(newMsg);
+    }
+  };
+
+  const handleClearChatHistory = (channelId) => {
+    if (!channelId) return;
+    setMessages(prev => ({
+      ...prev,
+      [channelId]: []
+    }));
+
+    realtimeSignaling.sendChatClear(channelId);
+    if (socket && socket.connected) {
+      socket.emit('chat:clear', { channelId });
+    }
+  };
+
+  const handleCreateTextChannel = (e) => {
+    e?.preventDefault();
+    if (!newTextName.trim()) return;
+
+    const formattedName = newTextName
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, '-')
+      .replace(/[^a-z0-9-_]/g, '');
+
+    const newChanId = `text-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const newChan = {
+      id: newChanId,
+      name: formattedName || 'metin-kanali',
+      description: newTextDesc.trim() || 'Yeni sohbet kanalı',
+      created_by: currentUser?.id || null
+    };
+
+    setChannels(prev => {
+      const updated = {
+        ...prev,
+        text: [...prev.text.filter(c => c.id !== newChanId), newChan]
+      };
+      saveCustomTextChannels(updated.text);
+      return updated;
+    });
+
+    realtimeSignaling.sendTextChannelUpdated(newChan);
+    if (socket && socket.connected) {
+      socket.emit('textchannel:create', newChan);
+    }
+
+    setActiveTextChannel(newChanId);
+    setShowCreateTextModal(false);
+    setNewTextName('');
+    setNewTextDesc('');
+  };
+
+  const handleDeleteTextChannel = (channelId, e) => {
+    e?.stopPropagation();
+    if (channelId === 'genel' || channelId === 'oyunlar') {
+      alert('Varsayılan sistem kanalları silinemez!');
+      return;
+    }
+    if (!window.confirm('Bu metin kanalını ve tüm mesajlarını silmek istediğinize emin misiniz?')) {
+      return;
+    }
+
+    setChannels(prev => {
+      const updated = {
+        ...prev,
+        text: prev.text.filter(c => c.id !== channelId)
+      };
+      saveCustomTextChannels(updated.text);
+      return updated;
+    });
+
+    setMessages(prev => {
+      const next = { ...prev };
+      delete next[channelId];
+      return next;
+    });
+
+    if (activeTextChannel === channelId) {
+      setActiveTextChannel('genel');
+    }
+
+    realtimeSignaling.sendTextChannelDeleted(channelId);
+    if (socket && socket.connected) {
+      socket.emit('textchannel:delete', { id: channelId });
     }
   };
 
@@ -1525,8 +1868,19 @@ export default function App() {
     return (
       <div 
         onContextMenu={(e) => e.preventDefault()} 
-        className="h-screen w-screen bg-[#0d1117] flex items-center justify-center relative select-none"
+        className="h-screen w-screen bg-[#0d1117] flex flex-col items-center justify-center relative select-none overflow-hidden"
+        style={{
+          backgroundImage: 'radial-gradient(circle at 50% 25%, rgba(99, 102, 241, 0.16), transparent 70%), radial-gradient(circle at 85% 85%, rgba(16, 185, 129, 0.08), transparent 50%)'
+        }}
       >
+        {/* Discord Tarzı Pencere Taşıma Başlığı */}
+        <div className="titlebar-drag-region h-9 w-full flex items-center justify-between px-4 absolute top-0 left-0 right-0 z-50">
+          <div className="flex items-center space-x-2 titlebar-no-drag">
+            <TurkCordLogo size={18} />
+            <span className="text-white text-xs font-black tracking-wide">TurkCord</span>
+          </div>
+        </div>
+
         <AuthModal 
           onAuthSuccess={(user) => {
             setCurrentUser(user);
@@ -1540,15 +1894,33 @@ export default function App() {
     );
   }
 
+  const voiceChannels = (channels && Array.isArray(channels.voice)) ? channels.voice : DEFAULT_FALLBACK_VOICE_ROOMS;
+  const textChannels = (channels && Array.isArray(channels.text)) ? channels.text : DEFAULT_FALLBACK_TEXT_CHANNELS;
   const currentVoiceRoomUsers = activeVoiceChannel ? (voiceRooms[activeVoiceChannel] || []) : [];
-  const currentVoiceObj = channels.voice?.find(v => v.id === activeVoiceChannel);
-  const currentTextObj = channels.text?.find(c => c.id === activeTextChannel) || channels.text?.[0];
+  const currentVoiceObj = voiceChannels.find(v => v.id === activeVoiceChannel);
+  const currentTextObj = textChannels.find(c => c.id === activeTextChannel) || textChannels[0] || DEFAULT_FALLBACK_TEXT_CHANNELS[0];
 
   return (
     <div 
       onContextMenu={(e) => e.preventDefault()} 
-      className="flex h-screen w-screen overflow-hidden bg-[#0d1117] text-[#e6edf3] font-sans antialiased relative select-none"
+      className="flex flex-col h-screen w-screen overflow-hidden bg-[#0d1117] text-[#e6edf3] font-sans antialiased relative select-none"
     >
+      {/* Discord Tarzı Yerleşik Windows Başlık Çubuğu */}
+      <div className="titlebar-drag-region h-8 w-full bg-[#0d1117] border-b border-[#21262d] flex items-center justify-between px-3 text-xs font-bold text-[#7d8590] flex-shrink-0 z-40">
+        <div className="flex items-center space-x-2 titlebar-no-drag">
+          <TurkCordLogo size={16} />
+          <span className="text-white text-[11px] font-black tracking-wide">TurkCord</span>
+          <span className="text-[10px] text-[#484f58] font-mono">v1.0.0</span>
+        </div>
+        <div className="flex items-center space-x-3 pr-36 titlebar-no-drag">
+          <div className="flex items-center space-x-1.5 text-[10px] text-emerald-400 font-bold bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/20">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span>{livePing}ms</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex flex-1 overflow-hidden relative">
       {/* Canlı Oda Daveti Bildirimi (Floating Toast) */}
       {incomingInvite && (
         <div className="absolute top-5 left-1/2 -translate-x-1/2 z-50 bg-[#161b22] border-2 border-emerald-500 rounded-2xl p-4 shadow-2xl flex items-center space-x-4 animate-bounce-subtle">
@@ -1581,8 +1953,8 @@ export default function App() {
       {/* Arkadaşlık İsteği / Kabulü Toast Bildirimi */}
       {incomingFriendToast && (
         <div className="absolute top-5 right-5 z-50 bg-[#161b22] border-2 border-indigo-500 rounded-2xl p-4 shadow-2xl flex items-center space-x-3.5 animate-bounce">
-          <div className="w-10 h-10 rounded-xl bg-indigo-600/30 border border-indigo-500 flex items-center justify-center text-xl flex-shrink-0">
-            {incomingFriendToast.fromUser?.avatar || '🎉'}
+          <div className="w-10 h-10 rounded-xl bg-indigo-600/30 border border-indigo-500 flex items-center justify-center text-xl flex-shrink-0 overflow-hidden">
+            <UserAvatar avatar={incomingFriendToast.fromUser?.avatar} className="w-full h-full rounded-xl" textClassName="text-xl" fallback="🎉" />
           </div>
           <div>
             <div className="text-sm font-bold text-white">
@@ -1667,12 +2039,11 @@ export default function App() {
               <TurkCordLogo size={36} className="drop-shadow-md" />
               <div>
                 <h1 className="text-base font-extrabold text-white leading-tight">TurkCord</h1>
-                <p className="text-[11px] text-[#7d8590]">Sıfır Gecikmeli Ses & Sohbet</p>
               </div>
             </div>
 
             <div className="flex items-center space-x-1.5">
-              {!isStandaloneApp && (
+              {!isStandaloneApp && !isDesktopApp && (
                 <button
                   type="button"
                   onClick={handleInstallApp}
@@ -1684,13 +2055,13 @@ export default function App() {
                 </button>
               )}
 
-              {isStandaloneApp && (
+              {isStandaloneApp && !isDesktopApp && (
                 <div
                   className="flex items-center space-x-1 px-2 py-1 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[10px] font-bold"
-                  title="Masaüstü Uygulaması Olarak Çalışıyor"
+                  title="PWA Uygulaması Olarak Çalışıyor"
                 >
                   <Laptop className="w-3 h-3" />
-                  <span>Masaüstü</span>
+                  <span>PWA</span>
                 </div>
               )}
 
@@ -1757,8 +2128,11 @@ export default function App() {
               </button>
 
               <button
-                onClick={() => setActiveTab('chat')}
-                className={`flex-1 flex items-center justify-center space-x-1 py-2 rounded-lg text-xs font-bold transition ${
+                onClick={() => {
+                  setActiveTab('chat');
+                  setUnreadCounts(prev => ({ ...prev, [activeTextChannel]: 0 }));
+                }}
+                className={`flex-1 flex items-center justify-center space-x-1 py-2 rounded-lg text-xs font-bold transition relative ${
                   activeTab === 'chat'
                     ? 'bg-indigo-600 text-white shadow'
                     : 'text-[#7d8590] hover:text-white'
@@ -1766,6 +2140,11 @@ export default function App() {
               >
                 <MessageSquare className="w-3.5 h-3.5" />
                 <span>Metin</span>
+                {totalUnreadChatCount > 0 && (
+                  <span className="ml-1 px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px] font-black animate-pulse">
+                    {totalUnreadChatCount}
+                  </span>
+                )}
               </button>
 
               <button
@@ -1886,23 +2265,31 @@ export default function App() {
                 {/* Odalar */}
                 {channels.voice?.map((v) => {
                   const isCurrent = activeVoiceChannel === v.id;
+                  const isSelected = selectedVoiceRoomId === v.id;
                   const usersInRoom = voiceRooms[v.id] || [];
                   const isOwner = v.created_by === currentUser?.id || !v.created_by;
 
                   return (
                     <div
                       key={v.id}
-                      onClick={() => handleRoomClick(v)}
+                      onClick={() => {
+                        setSelectedVoiceRoomId(v.id);
+                        if (isCurrent) {
+                          setActiveTab('voice');
+                        }
+                      }}
                       className={`p-3 rounded-2xl cursor-pointer transition-all border group relative ${
                         isCurrent
                           ? 'bg-emerald-500/10 border-emerald-500/50 shadow-sm'
+                          : isSelected
+                          ? 'bg-[#21262d] border-emerald-500/60 shadow-md ring-1 ring-emerald-500/30'
                           : 'bg-[#21262d]/50 hover:bg-[#21262d] border-[#30363d]'
                       }`}
                     >
                       <div className="flex items-center justify-between">
                         <div className="flex items-center space-x-2.5 truncate">
                           <div className={`w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 ${
-                            isCurrent ? 'bg-emerald-500 text-black' : 'bg-[#30363d] text-white'
+                            isCurrent ? 'bg-emerald-500 text-black' : isSelected ? 'bg-emerald-500/20 text-emerald-400' : 'bg-[#30363d] text-white'
                           }`}>
                             {v.hasPassword ? (
                               <Lock className="w-4 h-4 text-amber-400" />
@@ -1920,13 +2307,18 @@ export default function App() {
                                 </span>
                               )}
                             </div>
-                            <div className="text-[11px] text-[#7d8590]">
-                              {usersInRoom.length === 0 ? 'Oda boş' : `${usersInRoom.length}/${v.limit} kişi bağlı`}
+                            <div className="text-[11px] text-[#7d8590] flex items-center space-x-1.5">
+                              <span>{usersInRoom.length === 0 ? 'Oda boş' : `${usersInRoom.length}/${v.limit} kişi bağlı`}</span>
+                              {v.limit > 0 && usersInRoom.length >= v.limit && (
+                                <span className="px-1.5 py-0.2 rounded-md bg-rose-500/20 text-rose-400 font-bold text-[9px] border border-rose-500/30 uppercase tracking-wider">
+                                  Dolu
+                                </span>
+                              )}
                             </div>
                           </div>
                         </div>
 
-                        <div className="flex items-center space-x-1">
+                        <div className="flex items-center space-x-1.5">
                           {/* Düzenle & Sil Butonları (Oda Sahibi veya Giriş Yapanlar) */}
                           {isOwner && (
                             <div className="hidden group-hover:flex items-center space-x-1 mr-1">
@@ -1963,11 +2355,31 @@ export default function App() {
                           )}
 
                           {isCurrent ? (
-                            <span className="text-[11px] font-bold text-emerald-400 bg-emerald-500/20 px-2 py-0.5 rounded-full animate-pulse">
-                              Bağlısın
+                            <span className="text-[11px] font-bold text-emerald-400 bg-emerald-500/20 px-2.5 py-1 rounded-full flex items-center space-x-1.5">
+                              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                              <span>Bağlısın</span>
                             </span>
                           ) : (
-                            <ChevronRight className="w-4 h-4 text-[#7d8590]" />
+                            <div className="flex items-center space-x-1">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedVoiceRoomId(v.id);
+                                  handleRoomClick(v);
+                                }}
+                                className={`${
+                                  isSelected ? 'flex' : 'hidden group-hover:flex'
+                                } px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-black text-xs shadow-md shadow-emerald-500/25 items-center space-x-1.5 transition transform active:scale-95`}
+                                title={`${v.name} odasına katıl`}
+                              >
+                                <Volume2 className="w-3.5 h-3.5" />
+                                <span>Odaya Katıl</span>
+                              </button>
+                              {!isSelected && (
+                                <ChevronRight className="w-4 h-4 text-[#7d8590] group-hover:hidden" />
+                              )}
+                            </div>
                           )}
                         </div>
                       </div>
@@ -1985,7 +2397,7 @@ export default function App() {
                                     : 'bg-[#30363d] text-[#c9d1d9]'
                                 }`}
                               >
-                                <span>{u.avatar || '🎮'}</span>
+                                <UserAvatar avatar={u.avatar} className="w-4 h-4 rounded-full" textClassName="text-xs" />
                                 <span className="max-w-[70px] truncate">{u.username}</span>
                                 {u.id !== currentUser?.id && !friendsSet.has(u.id) && !pendingSentRequests.has(u.id) && (
                                   <button
@@ -2014,28 +2426,64 @@ export default function App() {
             {activeTab === 'chat' && (
               // 2. METİN KANALLARI
               <div className="space-y-1.5 pt-1">
-                <div className="text-[11px] font-bold text-[#7d8590] uppercase tracking-wider px-2">
-                  Metin Kanalları
+                <div className="flex items-center justify-between px-2 mb-2">
+                  <div className="text-[11px] font-bold text-[#7d8590] uppercase tracking-wider">
+                    Metin Kanalları
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowCreateTextModal(true)}
+                    className="p-1 px-2 rounded-lg bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white transition text-xs font-bold flex items-center space-x-1"
+                    title="Yeni Metin Kanalı Oluştur"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span className="text-[10px]">Kanal Aç</span>
+                  </button>
                 </div>
 
                 {channels.text?.map((c) => {
                   const isCurrent = activeTextChannel === c.id;
+                  const unread = unreadCounts[c.id] || 0;
+                  const canDelete = c.id !== 'genel' && (isAdmin || c.created_by === currentUser?.id);
+
                   return (
-                    <button
+                    <div
                       key={c.id}
-                      onClick={() => setActiveTextChannel(c.id)}
-                      className={`w-full flex items-center justify-between p-3 rounded-xl text-sm font-semibold transition ${
+                      onClick={() => {
+                        setActiveTextChannel(c.id);
+                        setUnreadCounts(prev => ({ ...prev, [c.id]: 0 }));
+                      }}
+                      className={`w-full flex items-center justify-between p-2.5 rounded-xl text-sm font-semibold transition cursor-pointer group ${
                         isCurrent
                           ? 'bg-indigo-600 text-white shadow'
                           : 'text-[#c9d1d9] hover:bg-[#21262d]'
                       }`}
                     >
-                      <div className="flex items-center space-x-2.5 truncate">
-                        <Hash className="w-4 h-4 flex-shrink-0" />
+                      <div className="flex items-center space-x-2 truncate">
+                        <Hash className="w-4 h-4 flex-shrink-0 text-indigo-400 group-hover:text-white" />
                         <span className="truncate">{c.name}</span>
                       </div>
-                      {isCurrent && <span className="w-2 h-2 rounded-full bg-white" />}
-                    </button>
+
+                      <div className="flex items-center space-x-1.5 flex-shrink-0">
+                        {unread > 0 && !isCurrent && (
+                          <span className="px-1.5 py-0.5 rounded-full bg-rose-500 text-white text-[10px] font-black animate-pulse shadow">
+                            {unread}
+                          </span>
+                        )}
+
+                        {canDelete && (
+                          <button
+                            type="button"
+                            onClick={(e) => handleDeleteTextChannel(c.id, e)}
+                            className="opacity-0 group-hover:opacity-100 p-1 rounded-lg hover:bg-rose-500/20 text-[#7d8590] hover:text-rose-400 transition"
+                            title="Kanalı Sil"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {isCurrent && <span className="w-2 h-2 rounded-full bg-white ml-1" />}
+                      </div>
+                    </div>
                   );
                 })}
               </div>
@@ -2087,9 +2535,9 @@ export default function App() {
               onClick={() => setShowSettings(true)}
               className="flex items-center space-x-2.5 cursor-pointer hover:opacity-80 transition truncate max-w-[130px]"
             >
-              <div className="relative flex-shrink-0">
-                <span className="text-2xl">{currentUser?.avatar || '🎮'}</span>
-                <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-emerald-400 border-2 border-[#161b22] shadow-[0_0_8px_#10b981]" />
+              <div className="relative flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center">
+                <UserAvatar avatar={currentUser?.avatar} className="w-8 h-8 rounded-full border border-white/10" textClassName="text-2xl" />
+                <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-400 border-2 border-[#161b22] shadow-[0_0_8px_#10b981]" />
               </div>
               <div className="truncate">
                 <div className="text-sm font-bold text-white truncate leading-tight flex items-center space-x-1">
@@ -2312,10 +2760,10 @@ export default function App() {
                         }`}
                       >
                         <div className="relative mb-3">
-                          <div className={`w-24 h-24 rounded-full bg-[#21262d] flex items-center justify-center text-5xl transition-transform ${
-                            isSpeaking ? 'scale-110 shadow-lg' : ''
+                          <div className={`w-24 h-24 rounded-full bg-[#21262d] flex items-center justify-center text-5xl transition-transform overflow-hidden shadow-inner ${
+                            isSpeaking ? 'scale-110 shadow-lg ring-4 ring-emerald-500' : ''
                           }`}>
-                            {u.avatar || '🎮'}
+                            <UserAvatar avatar={u.avatar} className="w-full h-full rounded-full" textClassName="text-5xl" />
                           </div>
                           {isSpeaking && (
                             <span className="absolute -inset-1 rounded-full border-2 border-emerald-400 animate-ping opacity-75" />
@@ -2544,6 +2992,9 @@ export default function App() {
             onSendMessage={handleSendMessage}
             activeVoiceChannel={activeVoiceChannel}
             onGoToVoice={() => setActiveTab('voice')}
+            onClearChat={handleClearChatHistory}
+            currentUser={currentUser}
+            isAdmin={isAdmin}
           />
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
@@ -2611,7 +3062,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Masaüstü Uygulaması Yükleme Modalı (PWA) */}
+      {/* Masaüstü Uygulaması Yükleme Modalı (Windows .EXE & PWA) */}
       {showInstallGuideModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200">
           <div className="w-full max-w-lg rounded-3xl bg-[#161b22] border border-indigo-500/40 p-6 sm:p-7 space-y-6 shadow-2xl relative">
@@ -2627,65 +3078,59 @@ export default function App() {
             <div className="flex items-center space-x-4">
               <TurkCordLogo size={56} className="drop-shadow-xl" />
               <div>
-                <div className="inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 text-[11px] font-bold mb-1">
+                <div className="inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[11px] font-bold mb-1">
                   <Laptop className="w-3 h-3" />
-                  <span>Windows / Masaüstü Sürümü</span>
+                  <span>Windows Masaüstü Programı</span>
                 </div>
-                <h3 className="text-xl font-black text-white tracking-tight">TurkCord Masaüstü Uygulaması</h3>
+                <h3 className="text-xl font-black text-white tracking-tight">TurkCord'u Bilgisayarına Yükle</h3>
               </div>
             </div>
 
             <div className="space-y-3 text-sm text-[#c9d1d9] bg-[#0d1117] p-4 rounded-2xl border border-[#30363d]/60">
               <div className="flex items-start space-x-3">
                 <span className="text-emerald-400 font-bold">⚡</span>
-                <p><strong className="text-white">Bağımsız Pencere:</strong> Tarayıcı sekmelerinden bağımsız, görev çubuğuna ve masaüstüne sabitlenebilen temiz uygulama penceresi.</p>
+                <p><strong className="text-white">Bağımsız Windows Programı:</strong> Tarayıcıya ihtiyaç duymadan, Windows görev çubuğu ve Başlat menüsünden doğrudan çalışan gerçek masaüstü programı.</p>
               </div>
               <div className="flex items-start space-x-3">
                 <span className="text-indigo-400 font-bold">🎮</span>
-                <p><strong className="text-white">Ultra Düşük Gecikmeli Ses:</strong> Oyun oynarken arka planda minimum kaynak tüketimi ve kesintisiz WebRTC ses akışı.</p>
+                <p><strong className="text-white">Oyun İçi Arka Plan Performansı:</strong> Oyun oynarken arka planda donmayan, minimum RAM ve işlemci tüketen optimize ses motoru.</p>
               </div>
               <div className="flex items-start space-x-3">
                 <span className="text-amber-400 font-bold">🚀</span>
-                <p><strong className="text-white">Hızlı Başlatma:</strong> Bilgisayarınızı açtığınızda doğrudan masaüstü kısayolundan tek tıkla sohbete katılın.</p>
+                <p><strong className="text-white">Kolay Kurulum (Setup):</strong> İndirilen kurulum dosyasına tıklayarak tek adımda kurun ve hemen kullanmaya başlayın.</p>
               </div>
             </div>
 
-            {deferredPrompt ? (
-              <div className="space-y-3">
-                <button
-                  type="button"
-                  onClick={handleInstallApp}
-                  className="w-full py-3.5 px-4 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-sm shadow-xl shadow-indigo-600/30 flex items-center justify-center space-x-2 transition transform hover:-translate-y-0.5"
-                >
-                  <Download className="w-5 h-5" />
-                  <span>Şimdi Masaüstüne Yükle (Otomatik)</span>
-                </button>
-                <p className="text-center text-xs text-[#7d8590]">
-                  Chrome, Edge ve Chromium tarayıcıları tek tıkla masaüstü kısayolu oluşturur.
-                </p>
+            {/* WINDOWS SETUP (.EXE) İNDİRME ALANI */}
+            <div className="p-4 rounded-2xl bg-gradient-to-r from-emerald-950/40 via-[#161b22] to-indigo-950/40 border-2 border-emerald-500/60 shadow-lg space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-black text-emerald-400 uppercase tracking-wider flex items-center space-x-1.5">
+                  <span>💻</span>
+                  <span>Windows Setup</span>
+                </span>
               </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="p-3.5 rounded-2xl bg-[#0d1117] border border-[#30363d] space-y-2">
-                  <p className="text-xs font-bold text-white uppercase tracking-wider flex items-center space-x-1.5">
-                    <span>💡</span>
-                    <span>Tarayıcıdan Manuel Yükleme Adımları:</span>
-                  </p>
-                  <ol className="text-xs text-[#8b949e] space-y-1.5 list-decimal list-inside pl-1">
-                    <li>Tarayıcınızın adres çubuğunun sağındaki <strong className="text-white">Uygulama Yükle</strong> (veya monitör/indirme) simgesine tıklayın.</li>
-                    <li>Veya sağ üstteki <strong className="text-white">üç nokta (⋮)</strong> menüsünden <strong className="text-white">"TurkCord uygulamasını yükle"</strong> seçeneğini seçin.</li>
-                    <li>Açılan onay kutusunda <strong className="text-indigo-400 font-bold">"Yükle"</strong> butonuna basın. Masaüstünüze simge eklenecektir!</li>
-                  </ol>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowInstallGuideModal(false)}
-                  className="w-full py-3 px-4 rounded-2xl bg-[#21262d] hover:bg-[#30363d] text-white font-bold text-sm transition"
-                >
-                  Anladım, Kapat
-                </button>
-              </div>
-            )}
+              <p className="text-xs text-[#8b949e]">
+                Kurulum sihirbazı otomatik başlar. Masaüstü kısayolu oluşturulur.
+              </p>
+              <a
+                href="./downloads/TurkCord-Setup.exe"
+                download="TurkCord-Setup.exe"
+                className="w-full py-3.5 px-4 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-black font-black text-sm shadow-xl shadow-emerald-500/25 flex items-center justify-center space-x-2.5 transition transform hover:-translate-y-0.5 active:scale-98"
+              >
+                <Download className="w-5 h-5 text-black" />
+                <span>TurkCord Windows Kurulumunu İndir (.exe)</span>
+              </a>
+            </div>
+
+            <div className="pt-2 border-t border-[#30363d]/60">
+              <button
+                type="button"
+                onClick={() => setShowInstallGuideModal(false)}
+                className="w-full py-2.5 px-4 rounded-xl bg-[#21262d] hover:bg-[#30363d] text-white font-bold text-xs transition"
+              >
+                Kapat
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -2861,84 +3306,474 @@ export default function App() {
           </form>
         </div>
       )}
+
+      {/* Yeni Metin Kanalı Oluşturma Modalı */}
+      {showCreateTextModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 select-none animate-in fade-in duration-150">
+          <div className="w-full max-w-md rounded-3xl bg-[#161b22] border border-[#30363d] p-6 shadow-2xl relative">
+            <div className="flex items-center justify-between pb-4 border-b border-[#30363d] mb-4">
+              <div className="flex items-center space-x-2">
+                <Hash className="w-5 h-5 text-indigo-400" />
+                <h3 className="text-base font-bold text-white">Yeni Metin Kanalı Oluştur</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCreateTextModal(false)}
+                className="p-1 rounded-lg text-[#7d8590] hover:text-white hover:bg-[#21262d] transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateTextChannel} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold uppercase text-[#7d8590] mb-1.5">
+                  Kanal Adı
+                </label>
+                <div className="relative flex items-center">
+                  <span className="absolute left-3.5 text-[#7d8590] font-bold">#</span>
+                  <input
+                    type="text"
+                    required
+                    placeholder="ornek-sohbet"
+                    value={newTextName}
+                    onChange={(e) => setNewTextName(e.target.value)}
+                    className="w-full bg-[#0d1117] border border-[#30363d] focus:border-indigo-500 rounded-xl pl-8 pr-4 py-2.5 text-white outline-none text-sm transition"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase text-[#7d8590] mb-1.5">
+                  Kanal Açıklaması (İsteğe Bağlı)
+                </label>
+                <input
+                  type="text"
+                  placeholder="Kanal hakkında kısa bilgi..."
+                  value={newTextDesc}
+                  onChange={(e) => setNewTextDesc(e.target.value)}
+                  className="w-full bg-[#0d1117] border border-[#30363d] focus:border-indigo-500 rounded-xl px-4 py-2.5 text-white outline-none text-sm transition"
+                />
+              </div>
+
+              <div className="flex items-center justify-end space-x-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateTextModal(false)}
+                  className="px-4 py-2 rounded-xl text-sm font-bold text-[#7d8590] hover:text-white hover:bg-[#21262d] transition"
+                >
+                  Vazgeç
+                </button>
+                <button
+                  type="submit"
+                  disabled={!newTextName.trim()}
+                  className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold transition shadow disabled:opacity-40"
+                >
+                  Kanalı Oluştur
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      </div>
     </div>
   );
 }
 
-// Sade Sohbet Bileşeni
-function CleanChatView({ channel, messages, onSendMessage, activeVoiceChannel, onGoToVoice }) {
+// Görsel Boyutlandırma ve Sıkıştırma Yardımcısı (Maks 1200px, WebP/JPEG)
+const compressImage = (file, maxWidth = 1200, quality = 0.78) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+
+        if (width > maxWidth) {
+          height = Math.round((height * maxWidth) / width);
+          width = maxWidth;
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL('image/webp', quality) || canvas.toDataURL('image/jpeg', quality);
+        resolve(dataUrl);
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+};
+
+const CHAT_EMOJIS = [
+  '🎮', '🔥', '⚡', '🚀', '👑', '💀', '🎉', '🤣', '❤️', '👍',
+  '👏', '👀', '💪', '👾', '🎯', '🍕', '✨', '⭐', '😎', '😂',
+  '🥳', '🤝', '🏆', '💥', '💯', '🗿', '😭', '🤯', '🤡', '🫡',
+  '💣', '⚔️', '🛡️', '🕹️', '🎧', '🍿', '☕', '🥇', '🥈', '🥉'
+];
+
+// Gelişmiş & Modern Metin Sohbet Bileşeni
+function CleanChatView({ 
+  channel, 
+  messages, 
+  onSendMessage, 
+  activeVoiceChannel, 
+  onGoToVoice,
+  onClearChat,
+  currentUser,
+  isAdmin
+}) {
   const [inputText, setInputText] = useState('');
+  const [pendingImage, setPendingImage] = useState(null);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [lightboxImage, setLightboxImage] = useState(null);
+  const [isSoundOn, setIsSoundOn] = useState(() => soundEffects.isChatSoundEnabled);
   const endRef = React.useRef(null);
+  const fileInputRef = React.useRef(null);
+  const emojiPickerRef = React.useRef(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, pendingImage]);
+
+  // Click outside to close emoji picker
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (emojiPickerRef.current && !emojiPickerRef.current.contains(e.target)) {
+        setShowEmojiPicker(false);
+      }
+    };
+    if (showEmojiPicker) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showEmojiPicker]);
+
+  const handleToggleSound = () => {
+    const next = !isSoundOn;
+    setIsSoundOn(next);
+    soundEffects.setChatSoundEnabled(next);
+  };
+
+  const handleClearHistory = () => {
+    if (window.confirm(`#${channel?.name || 'bu'} kanalının tüm mesaj geçmişini silmek istediğinizden emin misiniz?`)) {
+      onClearChat?.(channel?.id);
+    }
+  };
+
+  const handleImageFileChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      alert('Lütfen geçerli bir görsel dosyası seçiniz (PNG, JPG, WebP, GIF)!');
+      return;
+    }
+    try {
+      const compressed = await compressImage(file, 1200, 0.78);
+      setPendingImage(compressed);
+    } catch (err) {
+      console.warn('Görsel yükleme hatası:', err);
+    } finally {
+      if (e.target) e.target.value = '';
+    }
+  };
+
+  const handlePaste = async (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image') !== -1) {
+        const file = items[i].getAsFile();
+        if (file) {
+          e.preventDefault();
+          const compressed = await compressImage(file, 1200, 0.78);
+          setPendingImage(compressed);
+          break;
+        }
+      }
+    }
+  };
+
+  const handleAddEmoji = (emoji) => {
+    setInputText(prev => prev + emoji);
+  };
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (!inputText.trim()) return;
-    onSendMessage(inputText);
+    if (!inputText.trim() && !pendingImage) return;
+    onSendMessage(inputText.trim(), pendingImage);
     setInputText('');
+    setPendingImage(null);
+    setShowEmojiPicker(false);
   };
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-hidden">
-      <div className="h-16 px-6 border-b border-[#30363d] flex items-center justify-between bg-[#161b22]/50 backdrop-blur">
-        <div className="flex items-center space-x-2">
-          <Hash className="w-5 h-5 text-indigo-400" />
-          <span className="font-extrabold text-white text-base">{channel?.name}</span>
-          <span className="text-xs text-[#7d8590] ml-2 hidden sm:inline">{channel?.description}</span>
+    <div className="flex-1 flex flex-col h-full overflow-hidden relative">
+      {/* Üst Başlık Barı */}
+      <div className="h-16 px-6 border-b border-[#30363d] flex items-center justify-between bg-[#161b22]/70 backdrop-blur z-10">
+        <div className="flex items-center space-x-2.5 truncate">
+          <Hash className="w-5 h-5 text-indigo-400 flex-shrink-0" />
+          <span className="font-extrabold text-white text-base truncate">#{channel?.name}</span>
+          <span className="text-xs text-[#7d8590] ml-2 hidden sm:inline truncate border-l border-[#30363d] pl-2.5">
+            {channel?.description || 'Metin sohbet kanalı'}
+          </span>
         </div>
 
-        {activeVoiceChannel && (
+        <div className="flex items-center space-x-2">
+          {/* Bildirim Sesi Aç / Kapat Butonu */}
           <button
-            onClick={onGoToVoice}
-            className="px-3.5 py-1.5 rounded-xl bg-emerald-500 text-black font-bold text-xs flex items-center space-x-1.5 hover:bg-emerald-400 transition shadow"
+            type="button"
+            onClick={handleToggleSound}
+            className={`p-2 rounded-xl transition flex items-center space-x-1.5 text-xs font-bold ${
+              isSoundOn 
+                ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/40 hover:bg-indigo-600/30' 
+                : 'bg-[#21262d] text-[#7d8590] hover:text-white border border-[#30363d]'
+            }`}
+            title={isSoundOn ? 'Mesaj Bildirim Sesi Açık (Kapatmak için tıkla)' : 'Mesaj Bildirim Sesi Kapalı (Açmak için tıkla)'}
           >
-            <Volume2 className="w-4 h-4 animate-bounce" />
-            <span>Sese Dön</span>
+            {isSoundOn ? <Bell className="w-4 h-4 text-indigo-400" /> : <BellOff className="w-4 h-4" />}
+            <span className="hidden md:inline">{isSoundOn ? 'Ses Açık' : 'Sessiz'}</span>
           </button>
-        )}
+
+          {/* Sohbet Geçmişini Temizle Butonu */}
+          <button
+            type="button"
+            onClick={handleClearHistory}
+            className="px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 transition flex items-center space-x-1.5 text-xs font-bold shadow-sm"
+            title="Bu metin kanalının tüm sohbet geçmişini sil"
+          >
+            <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+            <span>Sohbeti Temizle</span>
+          </button>
+
+          {/* Ses Kanalına Dön Butonu */}
+          {activeVoiceChannel && (
+            <button
+              onClick={onGoToVoice}
+              className="px-3.5 py-1.5 rounded-xl bg-emerald-500 text-black font-bold text-xs flex items-center space-x-1.5 hover:bg-emerald-400 transition shadow"
+            >
+              <Volume2 className="w-4 h-4 animate-bounce" />
+              <span>Sese Dön</span>
+            </button>
+          )}
+        </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6 space-y-4">
-        {messages.map((m, idx) => (
-          <div key={m.id || idx} className="flex items-start space-x-3">
-            <div className="w-10 h-10 rounded-2xl bg-[#21262d] flex items-center justify-center text-xl flex-shrink-0">
-              {m.sender?.avatar || '🎮'}
+      {/* Mesaj Listesi (Kaydırılabilir Alan) */}
+      <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
+        {(!messages || messages.length === 0) ? (
+          <div className="flex flex-col items-center justify-center h-full text-center py-12 select-none opacity-70">
+            <div className="w-16 h-16 rounded-3xl bg-[#21262d] flex items-center justify-center text-3xl mb-3 shadow">
+              💬
             </div>
-            <div className="flex-1">
-              <div className="flex items-baseline space-x-2">
-                <span className="font-bold text-white text-sm">{m.sender?.username}</span>
-                <span className="text-[11px] text-[#7d8590]">
-                  {new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </span>
-              </div>
-              <div className="text-sm text-[#e6edf3] mt-0.5 leading-relaxed bg-[#161b22] p-3 rounded-2xl rounded-tl-none border border-[#30363d] inline-block max-w-xl">
-                {m.text}
-              </div>
-            </div>
+            <h4 className="text-base font-bold text-white">#{channel?.name} kanalına hoş geldiniz!</h4>
+            <p className="text-xs text-[#7d8590] max-w-sm mt-1">
+              Bu kanalın henüz mesaj geçmişi yok. İlk mesajı yazarak veya fotoğraf paylaşarak sohbeti başlatın.
+            </p>
           </div>
-        ))}
+        ) : (
+          messages.map((m, idx) => (
+            <div key={m.id || idx} className="flex items-start space-x-3 w-full min-w-0">
+              <div className="w-10 h-10 rounded-2xl bg-[#21262d] flex items-center justify-center text-xl flex-shrink-0 select-none shadow overflow-hidden border border-[#30363d]">
+                <UserAvatar avatar={m.sender?.avatar} className="w-full h-full rounded-2xl" textClassName="text-xl" />
+              </div>
+
+              {/* Mesaj İçeriği: min-w-0 ve overflow-hidden uzun metinlerin dışarı taşmasını engeller */}
+              <div className="min-w-0 flex-1 overflow-hidden">
+                <div className="flex items-baseline space-x-2 truncate">
+                  <span className="font-bold text-white text-sm truncate">{m.sender?.username}</span>
+                  <span className="text-[11px] text-[#7d8590] flex-shrink-0">
+                    {new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </div>
+
+                {/* Baloncuk: break-words ve [overflow-wrap:anywhere] ile taşma tamamen önlenir */}
+                <div className="mt-1 leading-relaxed bg-[#161b22] p-3.5 rounded-2xl rounded-tl-none border border-[#30363d] inline-block max-w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] shadow-sm">
+                  {m.text && (
+                    <p className="text-sm text-[#e6edf3] break-words whitespace-pre-wrap [overflow-wrap:anywhere]">
+                      {m.text}
+                    </p>
+                  )}
+
+                  {/* Fotoğraf Eklentisi */}
+                  {m.image && (
+                    <div className="mt-2.5">
+                      <img
+                        src={m.image}
+                        alt="Paylaşılan Görsel"
+                        onClick={() => setLightboxImage(m.image)}
+                        className="max-h-80 max-w-full rounded-xl border border-[#30363d]/80 object-contain bg-black/40 cursor-pointer hover:brightness-110 hover:border-indigo-500/50 transition-all shadow-md"
+                        loading="lazy"
+                      />
+                      <span className="text-[10px] text-[#7d8590] mt-1 block">Büyütmek için tıkla 🔍</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))
+        )}
         <div ref={endRef} />
       </div>
 
-      <form onSubmit={handleSubmit} className="p-4 bg-[#161b22] border-t border-[#30363d] flex items-center space-x-3">
-        <input
-          type="text"
-          value={inputText}
-          onChange={(e) => setInputText(e.target.value)}
-          placeholder={`#${channel?.name || 'sohbet'} kanalına yaz...`}
-          className="flex-1 bg-[#0d1117] border border-[#30363d] focus:border-indigo-500 rounded-xl px-4 py-3 text-sm text-white outline-none transition"
-        />
-        <button
-          type="submit"
-          disabled={!inputText.trim()}
-          className="px-5 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm transition disabled:opacity-40"
+      {/* Mesaj Giriş Alanı */}
+      <div className="bg-[#161b22] border-t border-[#30363d] p-3 sm:p-4 relative">
+        {/* Yüklenmek Üzere Olan Görsel Önizleme Barı */}
+        {pendingImage && (
+          <div className="mb-2 p-2 rounded-2xl bg-[#0d1117] border border-indigo-500/50 flex items-center justify-between animate-in fade-in">
+            <div className="flex items-center space-x-3">
+              <img
+                src={pendingImage}
+                alt="Gönderilecek Görsel"
+                className="w-14 h-14 object-cover rounded-xl border border-[#30363d]"
+              />
+              <div>
+                <span className="text-xs font-bold text-white block">Görsel Eklendi</span>
+                <span className="text-[11px] text-emerald-400">Gönderilmeye hazır</span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setPendingImage(null)}
+              className="p-1.5 rounded-xl bg-[#21262d] hover:bg-rose-600 text-white transition text-xs font-bold flex items-center space-x-1"
+              title="Görseli İptal Et"
+            >
+              <X className="w-4 h-4" />
+              <span>Kaldır</span>
+            </button>
+          </div>
+        )}
+
+        {/* Emoji Seçici Açılır Panel */}
+        {showEmojiPicker && (
+          <div
+            ref={emojiPickerRef}
+            className="absolute bottom-20 left-4 sm:left-6 z-30 p-3 rounded-2xl bg-[#161b22] border-2 border-indigo-500/50 shadow-2xl w-72 max-w-[90vw] animate-in fade-in zoom-in-95"
+          >
+            <div className="flex items-center justify-between pb-2 border-b border-[#30363d] mb-2 text-xs font-bold text-[#7d8590]">
+              <span>Gaming & Sohbet Emojileri</span>
+              <button
+                type="button"
+                onClick={() => setShowEmojiPicker(false)}
+                className="hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="grid grid-cols-8 gap-1.5 max-h-48 overflow-y-auto p-1">
+              {CHAT_EMOJIS.map((em) => (
+                <button
+                  key={em}
+                  type="button"
+                  onClick={() => handleAddEmoji(em)}
+                  className="w-8 h-8 rounded-lg hover:bg-indigo-600/30 flex items-center justify-center text-lg hover:scale-125 transition"
+                >
+                  {em}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} onPaste={handlePaste} className="flex items-center space-x-2">
+          {/* Gizli Dosya Seçici */}
+          <input
+            type="file"
+            ref={fileInputRef}
+            accept="image/*"
+            className="hidden"
+            onChange={handleImageFileChange}
+          />
+
+          {/* Fotoğraf Ekle Butonu */}
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="p-3 rounded-xl bg-[#0d1117] hover:bg-indigo-600/20 text-[#7d8590] hover:text-indigo-400 border border-[#30363d] transition flex-shrink-0"
+            title="Fotoğraf Yükle (veya Ctrl+V ile yapıştır)"
+          >
+            <ImageIcon className="w-5 h-5" />
+          </button>
+
+          {/* Emoji Seçici Butonu */}
+          <button
+            type="button"
+            onClick={() => setShowEmojiPicker(prev => !prev)}
+            className={`p-3 rounded-xl border transition flex-shrink-0 ${
+              showEmojiPicker 
+                ? 'bg-amber-500/20 text-amber-400 border-amber-500/40' 
+                : 'bg-[#0d1117] text-[#7d8590] hover:text-amber-400 border-[#30363d] hover:bg-[#21262d]'
+            }`}
+            title="Emoji Ekle"
+          >
+            <Smile className="w-5 h-5" />
+          </button>
+
+          {/* Metin Giriş Alanı */}
+          <input
+            type="text"
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            placeholder={`#${channel?.name || 'sohbet'} kanalına yaz veya fotoğraf yapıştır...`}
+            className="flex-1 bg-[#0d1117] border border-[#30363d] focus:border-indigo-500 rounded-xl px-4 py-3 text-sm text-white outline-none transition font-medium"
+          />
+
+          {/* Gönder Butonu */}
+          <button
+            type="submit"
+            disabled={!inputText.trim() && !pendingImage}
+            className="px-5 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm transition disabled:opacity-40 flex-shrink-0 shadow"
+          >
+            Gönder
+          </button>
+        </form>
+      </div>
+
+      {/* Büyük Fotoğraf Açma (Lightbox Modal) */}
+      {lightboxImage && (
+        <div
+          onClick={() => setLightboxImage(null)}
+          className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-150 select-none"
         >
-          Gönder
-        </button>
-      </form>
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="relative max-w-5xl max-h-[90vh] flex flex-col items-center"
+          >
+            <div className="absolute -top-12 right-0 flex items-center space-x-2">
+              <a
+                href={lightboxImage}
+                download="turkcord-gorsel.png"
+                className="p-2 px-3 rounded-xl bg-[#21262d] text-white hover:bg-indigo-600 transition flex items-center space-x-1.5 text-xs font-bold shadow"
+                title="Görseli İndir"
+              >
+                <Download className="w-4 h-4" />
+                <span>İndir</span>
+              </a>
+              <button
+                type="button"
+                onClick={() => setLightboxImage(null)}
+                className="p-2 rounded-xl bg-[#21262d] text-white hover:bg-rose-600 transition"
+                title="Kapat"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <img
+              src={lightboxImage}
+              alt="Büyük Görsel Önizleme"
+              className="max-h-[85vh] max-w-full object-contain rounded-2xl shadow-2xl border border-white/10"
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -3049,7 +3884,7 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
         ref={videoRef}
         autoPlay
         playsInline
-        muted={isLocal}
+        muted={true}
         className="w-full h-full object-contain cursor-pointer"
         onClick={toggleFullscreen}
       />

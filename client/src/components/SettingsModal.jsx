@@ -1,12 +1,41 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   X, Mic, Volume2, ShieldCheck, Zap, Sliders, Check, 
-  VolumeX, SlidersHorizontal, Radio, Sparkles, User, AudioWaveform, Bell 
+  VolumeX, SlidersHorizontal, Radio, Sparkles, User, AudioWaveform, Bell,
+  Camera, Image as ImageIcon, Trash2, Headphones, Upload
 } from 'lucide-react';
 import { webrtc } from '../services/webrtc';
 import { soundEffects } from '../services/soundEffects';
+import UserAvatar from './UserAvatar';
 
 const AVATARS = ['🎮', '⚡', '🚀', '🔥', '👾', '🎯', '🐱', '🦊', '🐉', '🎧', '🕹️', '🍕'];
+
+function compressAvatarImage(file, maxSize = 256) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onerror = reject;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = maxSize;
+        canvas.height = maxSize;
+        const ctx = canvas.getContext('2d');
+
+        // Center square crop
+        const minDim = Math.min(img.width, img.height);
+        const sx = (img.width - minDim) / 2;
+        const sy = (img.height - minDim) / 2;
+
+        ctx.drawImage(img, sx, sy, minDim, minDim, 0, 0, maxSize, maxSize);
+        resolve(canvas.toDataURL('image/webp', 0.82));
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 export default function SettingsModal({ currentUser, onClose, onUpdateUser }) {
   const [activeTab, setActiveTab] = useState('audio'); // 'audio', 'profile', 'engine'
@@ -14,6 +43,12 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser }) {
   const [avatar, setAvatar] = useState(currentUser?.avatar || '🎮');
   const [isTestingMic, setIsTestingMic] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
+
+  // Master Volume Controls (0% to 200%)
+  const [inputVolume, setInputVolume] = useState(() => webrtc.inputVolume ?? 100);
+  const [outputVolume, setOutputVolume] = useState(() => webrtc.outputVolume ?? 100);
+
+  const avatarFileInputRef = useRef(null);
 
   // Audio settings state loaded from webrtc
   const [audioSettings, setAudioSettings] = useState(() => webrtc.loadAudioSettings());
@@ -24,6 +59,34 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser }) {
       webrtc.stopMicTest();
     };
   }, []);
+
+  const handleInputVolumeChange = (val) => {
+    setInputVolume(val);
+    webrtc.setInputVolume(val);
+  };
+
+  const handleOutputVolumeChange = (val) => {
+    setOutputVolume(val);
+    webrtc.setOutputVolume(val);
+  };
+
+  const handleCustomAvatarUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      alert('Lütfen geçerli bir görsel dosyası seçin (PNG, JPG, WebP)!');
+      return;
+    }
+    try {
+      const dataUrl = await compressAvatarImage(file, 256);
+      setAvatar(dataUrl);
+    } catch (err) {
+      console.warn('Avatar upload error:', err);
+      alert('Görsel yüklenirken bir hata oluştu.');
+    } finally {
+      if (e.target) e.target.value = '';
+    }
+  };
 
   const handleUpdateAudioSetting = (key, value) => {
     const updated = { ...audioSettings, [key]: value };
@@ -146,6 +209,63 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser }) {
           {/* TAB 1: SES AYARLARI */}
           {activeTab === 'audio' && (
             <div className="space-y-4 animate-in fade-in duration-150">
+              {/* Giriş & Çıkış Ses Düzeyleri (Master Sliders) */}
+              <div className="bg-[#21262d] p-4 rounded-2xl border border-[#30363d] space-y-4 shadow-sm">
+                {/* Mikrofon Giriş Sesi */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="flex items-center space-x-2">
+                      <Mic className="w-4 h-4 text-emerald-400" />
+                      <span className="text-xs font-bold text-white uppercase tracking-wide">Mikrofon Giriş Ses Seviyesi</span>
+                    </div>
+                    <span className="font-mono font-bold text-xs px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                      %{inputVolume}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="200"
+                    step="5"
+                    value={inputVolume}
+                    onChange={(e) => handleInputVolumeChange(Number(e.target.value))}
+                    className="w-full h-2 bg-[#0d1117] rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                  />
+                  <div className="flex justify-between text-[10px] text-[#7d8590] mt-1 font-medium">
+                    <span>%0 (Sessiz)</span>
+                    <span>%100 (Varsayılan)</span>
+                    <span>%200 (Yüksek Kazanç)</span>
+                  </div>
+                </div>
+
+                {/* Kulaklık / Hoparlör Çıkış Sesi */}
+                <div className="pt-3 border-t border-[#30363d]/60">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="flex items-center space-x-2">
+                      <Headphones className="w-4 h-4 text-indigo-400" />
+                      <span className="text-xs font-bold text-white uppercase tracking-wide">Kulaklık / Hoparlör Çıkış Seviyesi</span>
+                    </div>
+                    <span className="font-mono font-bold text-xs px-2 py-0.5 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                      %{outputVolume}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="200"
+                    step="5"
+                    value={outputVolume}
+                    onChange={(e) => handleOutputVolumeChange(Number(e.target.value))}
+                    className="w-full h-2 bg-[#0d1117] rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                  />
+                  <div className="flex justify-between text-[10px] text-[#7d8590] mt-1 font-medium">
+                    <span>%0 (Sessiz)</span>
+                    <span>%100 (Varsayılan)</span>
+                    <span>%200 (Güçlendirilmiş)</span>
+                  </div>
+                </div>
+              </div>
+
               {/* Mikrofon Test Kartı */}
               <div className="bg-[#21262d] p-4 rounded-2xl border border-[#30363d] space-y-3">
                 <div className="flex items-center justify-between">
@@ -432,7 +552,55 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser }) {
 
           {/* TAB 2: PROFİL AYARLARI */}
           {activeTab === 'profile' && (
-            <div className="bg-[#21262d] p-4 rounded-2xl border border-[#30363d] space-y-3.5 animate-in fade-in duration-150">
+            <div className="bg-[#21262d] p-5 rounded-2xl border border-[#30363d] space-y-4 animate-in fade-in duration-150">
+              {/* Profil Önizleme Kartı */}
+              <div className="flex items-center space-x-4 p-3 bg-[#0d1117] rounded-2xl border border-[#30363d]">
+                <div className="w-16 h-16 rounded-2xl bg-[#161b22] border-2 border-indigo-500/40 flex items-center justify-center overflow-hidden flex-shrink-0 shadow-lg relative group">
+                  <UserAvatar avatar={avatar} className="w-full h-full rounded-2xl" textClassName="text-3xl" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-white font-extrabold text-sm truncate">
+                    {username || 'Kullanıcı'}
+                  </div>
+                  <div className="text-xs text-[#7d8590] mt-0.5 font-medium">
+                    {typeof avatar === 'string' && avatar.startsWith('data:image/')
+                      ? 'Özel Profil Fotoğrafı Yüklendi'
+                      : 'Emoji Avatar Seçili'}
+                  </div>
+
+                  <div className="flex items-center space-x-2 mt-2">
+                    <input
+                      ref={avatarFileInputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handleCustomAvatarUpload}
+                      className="hidden"
+                    />
+
+                    <button
+                      type="button"
+                      onClick={() => avatarFileInputRef.current?.click()}
+                      className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition flex items-center space-x-1.5 shadow"
+                    >
+                      <Camera className="w-3.5 h-3.5" />
+                      <span>Fotoğraf Yükle</span>
+                    </button>
+
+                    {typeof avatar === 'string' && avatar.startsWith('data:image/') && (
+                      <button
+                        type="button"
+                        onClick={() => setAvatar('🎮')}
+                        className="px-2.5 py-1.5 rounded-xl bg-[#21262d] hover:bg-rose-500/20 text-[#7d8590] hover:text-rose-400 border border-[#30363d] text-xs font-bold transition flex items-center space-x-1"
+                        title="Fotoğrafı Kaldır ve Emojiye Dön"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Kaldır</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
               <div>
                 <label className="block text-xs font-bold uppercase text-[#7d8590] mb-1.5">
                   Kullanıcı Adı
@@ -447,7 +615,7 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser }) {
 
               <div>
                 <label className="block text-xs font-bold uppercase text-[#7d8590] mb-1.5">
-                  Avatarını Seç
+                  Veya Hazır Emoji Avatar Seç
                 </label>
                 <div className="grid grid-cols-6 gap-2">
                   {AVATARS.map((em) => (

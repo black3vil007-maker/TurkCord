@@ -1,11 +1,13 @@
 {
   "name": "turkcord",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "TurkCord - Düşük Gecikmeli WebRTC Ses ve Sohbet Platformu",
   "scripts": {
     "build": "node build.js",
     "start": "npm --prefix server start",
     "server": "npm --prefix server start",
-    "client": "npm --prefix client run dev"
+    "client": "npm --prefix client run dev",
+    "desktop": "npm --prefix desktop start",
+    "desktop:dist": "npm --prefix desktop run dist"
   }
 }

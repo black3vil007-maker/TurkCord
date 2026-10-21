@@ -196,23 +196,33 @@ io.on('connection', (socket) => {
   });
 
   // Text message
-  socket.on('chat:message', ({ channelId, text }) => {
+  socket.on('chat:message', ({ channelId, text, image, id }) => {
     const user = users[socket.id];
-    if (!user || !text || !text.trim()) return;
+    if (!user || (!text && !image)) return;
 
     if (!channelMessages[channelId]) {
       channelMessages[channelId] = [];
     }
 
+    const msgId = id || `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    
+    // Server-side duplicate check by ID or rapid identical message
+    const isDup = channelMessages[channelId].some(m => 
+      m.id === msgId || 
+      (m.sender?.id === user.id && m.text === (text || '').trim() && m.image === (image || null) && (Date.now() - new Date(m.timestamp).getTime() < 3000))
+    );
+    if (isDup) return;
+
     const newMsg = {
-      id: `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      id: msgId,
       channelId,
       sender: {
         id: user.id,
         username: user.username,
         avatar: user.avatar
       },
-      text: text.trim(),
+      text: (text || '').trim(),
+      image: image || null,
       timestamp: new Date().toISOString()
     };
 
@@ -223,6 +233,39 @@ io.on('connection', (socket) => {
     }
 
     io.emit('chat:message', newMsg);
+  });
+
+  // Chat clear relay
+  socket.on('chat:clear', ({ channelId }) => {
+    if (!channelId) return;
+    channelMessages[channelId] = [];
+    io.emit('chat:clear', { channelId });
+  });
+
+  // Dynamic text channel create
+  socket.on('textchannel:create', ({ id, name, description, created_by }) => {
+    if (!name || !name.trim()) return;
+    const channelId = id || `text-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const newChan = {
+      id: channelId,
+      name: name.trim().toLowerCase().replace(/\s+/g, '-'),
+      description: description || '',
+      created_by: created_by || null
+    };
+
+    if (!channels.text.some(c => c.id === channelId)) {
+      channels.text.push(newChan);
+    }
+    io.emit('channels:updated', channels);
+  });
+
+  // Dynamic text channel delete
+  socket.on('textchannel:delete', ({ id }) => {
+    if (!id || id === 'genel') return;
+    channels.text = channels.text.filter(c => c.id !== id);
+    delete channelMessages[id];
+    io.emit('channels:updated', channels);
+    io.emit('textchannel:deleted', { id });
   });
 
   // Dynamic room creation
@@ -283,29 +326,75 @@ io.on('connection', (socket) => {
     io.emit('voice:rooms-updated', getVoiceRoomsData());
   });
 
-  // Voice room join
-  socket.on('voice:join', ({ roomId }) => {
-    const user = users[socket.id];
+  // Voice room join with strict single-room occupancy per user across all sessions/devices
+  socket.on('voice:join', ({ roomId, user: clientUser }) => {
+    let user = users[socket.id];
+    if (!user && clientUser) {
+      users[socket.id] = {
+        socketId: socket.id,
+        id: clientUser.id,
+        username: clientUser.username || 'Kullanıcı',
+        avatar: clientUser.avatar || '🎮',
+        user_code: clientUser.user_code || null,
+        currentVoiceRoom: null,
+        isMuted: false,
+        isDeafened: false,
+        isScreenSharing: false,
+        isForceMuted: false
+      };
+      user = users[socket.id];
+    }
     if (!user) return;
 
-    // Leave previous voice room if in one
-    if (user.currentVoiceRoom && voiceRooms[user.currentVoiceRoom]) {
+    // 1. Leave previous room if in one on this socket
+    if (user.currentVoiceRoom) {
       leaveVoiceRoom(socket, user.currentVoiceRoom);
     }
 
+    // 2. Clear any OTHER sockets belonging to this user across all sessions/devices
+    for (const [sId, u] of Object.entries(users)) {
+      if (u && u.id === user.id && sId !== socket.id) {
+        if (u.currentVoiceRoom) {
+          const oldRoom = u.currentVoiceRoom;
+          const otherSock = io.sockets.sockets.get(sId);
+          if (otherSock) {
+            leaveVoiceRoom(otherSock, oldRoom);
+            otherSock.emit('voice:force-leave', {
+              reason: 'Hesabınız başka bir cihazdan ses odasına bağlandı.'
+            });
+          } else if (voiceRooms[oldRoom]) {
+            voiceRooms[oldRoom].delete(sId);
+            io.to(oldRoom).emit('voice:user-left', { roomId: oldRoom, peerId: sId });
+          }
+        }
+        u.currentVoiceRoom = null;
+      }
+    }
+
+    // 3. Remove user's sockets from all other rooms
+    for (const [rId, socketSet] of Object.entries(voiceRooms)) {
+      if (rId !== roomId) {
+        for (const sId of Array.from(socketSet)) {
+          if (users[sId]?.id === user.id) {
+            socketSet.delete(sId);
+            io.to(rId).emit('voice:user-left', { roomId: rId, peerId: sId });
+          }
+        }
+      }
+    }
+
+    // 4. Add to target room
     if (!voiceRooms[roomId]) {
       voiceRooms[roomId] = new Set();
     }
-
-    // Get list of existing peers in this voice room before adding new one
-    const existingPeers = Array.from(voiceRooms[roomId]);
+    const existingPeers = Array.from(voiceRooms[roomId]).filter(sId => sId !== socket.id);
 
     voiceRooms[roomId].add(socket.id);
     user.currentVoiceRoom = roomId;
 
     socket.join(roomId);
 
-    // Send existing peers to the newly joined peer so it can initiate WebRTC offers
+    // 5. Send peers and broadcast updates
     socket.emit('voice:peers', {
       roomId,
       peers: existingPeers.map(peerId => ({
@@ -314,7 +403,6 @@ io.on('connection', (socket) => {
       }))
     });
 
-    // Notify other peers in the room that a new user joined
     socket.to(roomId).emit('voice:user-joined', {
       roomId,
       peer: {

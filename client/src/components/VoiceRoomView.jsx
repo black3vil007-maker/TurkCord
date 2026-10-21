@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { webrtc } from '../services/webrtc';
+import UserAvatar from './UserAvatar';
 import { 
   Mic, 
   MicOff, 
@@ -134,11 +135,11 @@ export default function VoiceRoomView({
                 {/* Big Avatar */}
                 <div className="relative mb-2">
                   <div
-                    className={`w-24 h-24 rounded-3xl bg-tc-panel flex items-center justify-center text-5xl transition-all duration-200 ${
+                    className={`w-24 h-24 rounded-3xl bg-tc-panel flex items-center justify-center text-5xl transition-all duration-200 overflow-hidden ${
                       isSpeaking ? 'ring-4 ring-tc-green ring-offset-4 ring-offset-tc-card scale-105' : ''
                     }`}
                   >
-                    {u.avatar || '🎮'}
+                    <UserAvatar avatar={u.avatar} className="w-full h-full rounded-3xl" textClassName="text-5xl" />
                   </div>
 
                   {/* Pulsing Speaking Wave */}
@@ -254,6 +255,7 @@ function RemoteVideoPlayer({ stream }) {
       ref={videoRef}
       autoPlay
       playsInline
+      muted={true}
       className="w-full h-full object-contain"
     />
   );

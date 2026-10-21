@@ -5,6 +5,7 @@ class SoundEffectsManager {
     this.ctx = null;
     this.volume = 0.32; // Balanced, non-fatiguing volume
     this.isEnabled = this.loadSetting();
+    this.isChatSoundEnabled = this.loadChatSoundSetting();
   }
 
   loadSetting() {
@@ -14,6 +15,22 @@ class SoundEffectsManager {
     } catch (e) {
       return true;
     }
+  }
+
+  loadChatSoundSetting() {
+    try {
+      const val = localStorage.getItem('turkcord_chat_sound_enabled');
+      return val !== 'false';
+    } catch (e) {
+      return true;
+    }
+  }
+
+  setChatSoundEnabled(enabled) {
+    this.isChatSoundEnabled = Boolean(enabled);
+    try {
+      localStorage.setItem('turkcord_chat_sound_enabled', String(this.isChatSoundEnabled));
+    } catch (e) {}
   }
 
   setEnabled(enabled) {
@@ -168,6 +185,42 @@ class SoundEffectsManager {
       osc.stop(now + 0.18);
     } catch (e) {
       console.warn('[Sound] Self leave chime error:', e);
+    }
+  }
+
+  // 5. Metin Mesajı Bildirim Sesi ("Biling!" Discord-Style Chime)
+  playMessageChime() {
+    if (!this.isEnabled || !this.isChatSoundEnabled) return;
+    try {
+      const ctx = this.getAudioContext();
+      if (!ctx) return;
+
+      const now = ctx.currentTime;
+      // İki tonlu kristal bildirim ("Biling"): 1046Hz (C6) -> 1568Hz (G6)
+      const tones = [
+        { freq: 1046.5, time: 0, duration: 0.08, vol: 0.38 },
+        { freq: 1567.98, time: 0.05, duration: 0.28, vol: 0.45 }
+      ];
+
+      tones.forEach(({ freq, time, duration, vol }) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, now + time);
+
+        gain.gain.setValueAtTime(0, now + time);
+        gain.gain.linearRampToValueAtTime(this.volume * vol, now + time + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + time + duration);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.start(now + time);
+        osc.stop(now + time + duration);
+      });
+    } catch (e) {
+      console.warn('[Sound] Message chime error:', e);
     }
   }
 }

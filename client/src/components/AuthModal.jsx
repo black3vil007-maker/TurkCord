@@ -146,15 +146,12 @@ export default function AuthModal({ onAuthSuccess }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 select-none">
-      <div className="bg-[#161b22] border border-[#30363d] rounded-3xl max-w-md w-full p-7 shadow-2xl relative overflow-hidden">
+    <div className="z-10 flex items-center justify-center p-4 select-none w-full max-w-md">
+      <div className="bg-[#161b22]/95 border-2 border-indigo-500/40 rounded-3xl max-w-md w-full p-7 shadow-2xl shadow-indigo-950/40 relative overflow-hidden backdrop-blur-xl">
         {/* Brand Header */}
         <div className="text-center mb-6">
           <TurkCordLogo size={58} className="mx-auto mb-3 drop-shadow-xl" />
           <h2 className="text-2xl font-black text-white">TurkCord</h2>
-          <p className="text-xs text-[#7d8590] mt-1">
-            Arkadaşlarınla sıfır gecikmeli ses ve oyun odaları
-          </p>
         </div>
 
         {/* Success Notice View (After signup) */}

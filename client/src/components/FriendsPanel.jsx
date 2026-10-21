@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../services/supabase';
+import { soundEffects } from '../services/soundEffects';
+import UserAvatar from './UserAvatar';
 import { 
   UserPlus, 
   Users, 
@@ -177,6 +179,7 @@ export default function FriendsPanel({
           setSearchStatus({ type: 'error', text: insertErr.message });
         }
       } else {
+        soundEffects.playMessageChime();
         setSearchStatus({ type: 'success', text: `Arkadaşlık isteği ${targetProfile.username} kullanıcısına gönderildi! 🎉` });
         setSearchCode('');
 
@@ -203,6 +206,7 @@ export default function FriendsPanel({
       .eq('id', friendshipId);
 
     if (!error) {
+      soundEffects.playMessageChime();
       if (socket?.connected && requesterUser) {
         socket.emit('friend:respond', {
           toUserCode: requesterUser.user_code,
@@ -398,8 +402,8 @@ export default function FriendsPanel({
                 >
                   <div className="flex items-center justify-between w-full">
                     <div className="flex items-center space-x-3 truncate">
-                      <div className="relative flex-shrink-0">
-                        <span className="text-2xl">{profile.avatar || '🎮'}</span>
+                      <div className="relative flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center">
+                        <UserAvatar avatar={profile.avatar} className="w-8 h-8 rounded-full border border-white/10" textClassName="text-2xl" />
                         {isOnline ? (
                           <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-emerald-400 border-2 border-[#161b22] shadow-[0_0_10px_#10b981] flex items-center justify-center">
                             <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
@@ -531,7 +535,9 @@ export default function FriendsPanel({
                 className="p-3 rounded-2xl bg-[#21262d] border border-[#30363d] flex items-center justify-between"
               >
                 <div className="flex items-center space-x-2.5 truncate">
-                  <span className="text-2xl">{req.user?.avatar || '🎮'}</span>
+                  <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0">
+                    <UserAvatar avatar={req.user?.avatar} className="w-8 h-8 rounded-full border border-white/10" textClassName="text-2xl" />
+                  </div>
                   <div className="truncate">
                     <div className="text-sm font-bold text-white truncate">
                       {req.user?.username}

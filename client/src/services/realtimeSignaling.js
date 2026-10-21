@@ -10,8 +10,11 @@ class RealtimeSignaling {
     this.onCandidate = null; // (fromId, candidate) => void
     this.onSpeaking = null; // (fromId, isSpeaking) => void
     this.onChatMessage = null; // (message) => void
+    this.onChatClear = null; // (channelId) => void
     this.onRoomUpdated = null; // (room) => void
     this.onRoomDeleted = null; // (roomId) => void
+    this.onTextChannelUpdated = null; // (channel) => void
+    this.onTextChannelDeleted = null; // (channelId) => void
     this.onScreenShareToggle = null; // (userId, isSharing) => void
     this.onQualityRequest = null; // (fromId, quality) => void
     this.currentVoiceRoom = null;
@@ -70,6 +73,12 @@ class RealtimeSignaling {
       }
     });
 
+    this.channel.on('broadcast', { event: 'chat:clear' }, ({ payload }) => {
+      if (payload && this.onChatClear) {
+        this.onChatClear(payload.channelId);
+      }
+    });
+
     this.channel.on('broadcast', { event: 'room:updated' }, ({ payload }) => {
       if (payload && this.onRoomUpdated) {
         this.onRoomUpdated(payload);
@@ -79,6 +88,18 @@ class RealtimeSignaling {
     this.channel.on('broadcast', { event: 'room:deleted' }, ({ payload }) => {
       if (payload && this.onRoomDeleted) {
         this.onRoomDeleted(payload.id);
+      }
+    });
+
+    this.channel.on('broadcast', { event: 'textchannel:updated' }, ({ payload }) => {
+      if (payload && this.onTextChannelUpdated) {
+        this.onTextChannelUpdated(payload);
+      }
+    });
+
+    this.channel.on('broadcast', { event: 'textchannel:deleted' }, ({ payload }) => {
+      if (payload && this.onTextChannelDeleted) {
+        this.onTextChannelDeleted(payload.id);
       }
     });
 
@@ -198,6 +219,33 @@ class RealtimeSignaling {
       type: 'broadcast',
       event: 'chat:message',
       payload: message
+    });
+  }
+
+  sendChatClear(channelId) {
+    if (!this.channel) return;
+    this.channel.send({
+      type: 'broadcast',
+      event: 'chat:clear',
+      payload: { channelId }
+    });
+  }
+
+  sendTextChannelUpdated(channel) {
+    if (!this.channel) return;
+    this.channel.send({
+      type: 'broadcast',
+      event: 'textchannel:updated',
+      payload: channel
+    });
+  }
+
+  sendTextChannelDeleted(channelId) {
+    if (!this.channel) return;
+    this.channel.send({
+      type: 'broadcast',
+      event: 'textchannel:deleted',
+      payload: { id: channelId }
     });
   }
 
