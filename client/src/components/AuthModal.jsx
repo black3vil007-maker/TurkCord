@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { supabase } from '../services/supabase';
 import { Mail, Lock, User, ArrowRight, CheckCircle2, AlertCircle } from 'lucide-react';
+import TurkCordLogo from './TurkCordLogo';
 
 const AVATARS = ['🎮', '⚡', '🚀', '🔥', '👾', '🎯', '🐱', '🦊', '🐉', '🎧', '🕹️', '🍕'];
 
@@ -126,9 +127,7 @@ export default function AuthModal({ onAuthSuccess }) {
       <div className="bg-[#161b22] border border-[#30363d] rounded-3xl max-w-md w-full p-7 shadow-2xl relative overflow-hidden">
         {/* Brand Header */}
         <div className="text-center mb-6">
-          <div className="w-14 h-14 rounded-2xl bg-indigo-600 text-white flex items-center justify-center mx-auto mb-3 text-2xl font-black shadow-lg shadow-indigo-600/30">
-            TC
-          </div>
+          <TurkCordLogo size={58} className="mx-auto mb-3 drop-shadow-xl" />
           <h2 className="text-2xl font-black text-white">TurkCord</h2>
           <p className="text-xs text-[#7d8590] mt-1">
             Arkadaşlarınla sıfır gecikmeli ses ve oyun odaları

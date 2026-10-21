@@ -359,24 +359,46 @@ export default function FriendsPanel({
               return (
                 <div
                   key={friendshipId}
-                  className="p-3 rounded-2xl bg-[#21262d]/60 border border-[#30363d] flex items-center justify-between"
+                  className={`p-3 rounded-2xl transition flex items-center justify-between ${
+                    isOnline
+                      ? 'bg-[#13231b]/60 border border-emerald-500/30 hover:border-emerald-500/60 shadow-sm'
+                      : 'bg-[#161b22]/70 border border-[#30363d]/70 opacity-75 hover:opacity-100'
+                  }`}
                 >
-                  <div className="flex items-center space-x-2.5 truncate">
+                  <div className="flex items-center space-x-3 truncate">
                     <div className="relative flex-shrink-0">
                       <span className="text-2xl">{profile.avatar || '🎮'}</span>
-                      <span className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[#161b22] ${
-                        isOnline ? 'bg-emerald-500' : 'bg-[#7d8590]'
-                      }`} />
+                      {isOnline ? (
+                        <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-emerald-400 border-2 border-[#161b22] shadow-[0_0_10px_#10b981] flex items-center justify-center">
+                          <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                        </span>
+                      ) : (
+                        <span 
+                          className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-[#484f58] border-2 border-[#161b22]" 
+                          title="Çevrimdışı"
+                        />
+                      )}
                     </div>
 
                     <div className="truncate">
-                      <div className="text-sm font-bold text-white truncate flex items-center space-x-1.5">
-                        <span>{profile.username}</span>
+                      <div className="text-sm font-bold text-white truncate flex items-center space-x-2">
+                        <span className="truncate">{profile.username}</span>
+                        {isOnline ? (
+                          <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded-md bg-emerald-500/20 border border-emerald-500/40 text-[9px] font-black tracking-wider text-emerald-300 flex-shrink-0">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                            <span>ONLINE</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded-md bg-[#21262d] border border-[#30363d] text-[9px] font-bold text-[#8b949e] flex-shrink-0">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#6e7681]" />
+                            <span>OFFLINE</span>
+                          </span>
+                        )}
                       </div>
                       <div className="text-[11px] font-medium truncate font-mono text-[#7d8590]">
                         {inVoiceRoomName ? (
-                          <span className="text-emerald-400 flex items-center space-x-1 font-sans">
-                            <Radio className="w-3 h-3 animate-pulse" />
+                          <span className="text-emerald-400 flex items-center space-x-1 font-sans font-bold">
+                            <Radio className="w-3 h-3 animate-pulse text-emerald-400" />
                             <span>{inVoiceRoomName}</span>
                           </span>
                         ) : (

@@ -5,6 +5,7 @@ import { supabase } from './services/supabase';
 import { soundEffects } from './services/soundEffects';
 import { 
   Volume2, 
+  VolumeX,
   Hash, 
   Mic, 
   MicOff, 
@@ -28,16 +29,24 @@ import {
   Zap,
   Maximize2,
   Minimize2,
-  Tv
+  Tv,
+  Download,
+  Laptop,
+  UserPlus,
+  Clock
 } from 'lucide-react';
 import AuthModal from './components/AuthModal';
 import FriendsPanel from './components/FriendsPanel';
 import SettingsModal from './components/SettingsModal';
+import TurkCordLogo from './components/TurkCordLogo';
 import { realtimeSignaling } from './services/realtimeSignaling';
 
 export default function App() {
   const [session, setSession] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [friendsSet, setFriendsSet] = useState(new Set());
+  const [pendingSentRequests, setPendingSentRequests] = useState(new Set());
   const [activeTab, setActiveTab] = useState('voice'); // 'voice', 'chat', 'friends'
   const [channels, setChannels] = useState({ text: [], voice: [] });
   const [activeTextChannel, setActiveTextChannel] = useState('genel');
@@ -83,6 +92,70 @@ export default function App() {
   const [pendingFriendCount, setPendingFriendCount] = useState(0);
   const [incomingFriendToast, setIncomingFriendToast] = useState(null);
 
+  // Per-participant individual volume controls (0% to 200%)
+  const [userVolumes, setUserVolumes] = useState(() => webrtc.loadPeerVolumes());
+
+  const handleUserVolumeChange = (userId, volume) => {
+    setUserVolumes(prev => ({ ...prev, [userId]: volume }));
+    webrtc.setPeerVolume(userId, volume);
+    const targetUser = allUsers.find(u => u.id === userId);
+    if (targetUser?.socketId && targetUser.socketId !== userId) {
+      webrtc.setPeerVolume(targetUser.socketId, volume);
+    }
+  };
+
+  const handleToggleUserMute = (userId) => {
+    const currentVol = userVolumes[userId] ?? 100;
+    if (currentVol === 0) {
+      handleUserVolumeChange(userId, 100);
+    } else {
+      handleUserVolumeChange(userId, 0);
+    }
+  };
+
+  // PWA Desktop Application Installation States
+  const [deferredPrompt, setDeferredPrompt] = useState(null);
+  const [isStandaloneApp, setIsStandaloneApp] = useState(false);
+  const [showInstallGuideModal, setShowInstallGuideModal] = useState(false);
+
+  useEffect(() => {
+    if (
+      window.matchMedia('(display-mode: standalone)').matches ||
+      window.navigator.standalone === true
+    ) {
+      setIsStandaloneApp(true);
+    }
+
+    const handleBeforeInstall = (e) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
+    window.addEventListener('appinstalled', () => {
+      setIsStandaloneApp(true);
+      setDeferredPrompt(null);
+      setShowInstallGuideModal(false);
+    });
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
+    };
+  }, []);
+
+  const handleInstallApp = async () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const choice = await deferredPrompt.userChoice;
+      if (choice && choice.outcome === 'accepted') {
+        setIsStandaloneApp(true);
+      }
+      setDeferredPrompt(null);
+    } else {
+      setShowInstallGuideModal(true);
+    }
+  };
+
   const parseRoomData = (r) => {
     let name = r.name || 'Ses Odası';
     let password = r.password || null;
@@ -118,6 +191,34 @@ export default function App() {
     return Array.from(map.values());
   };
 
+  // Güvenlik Önlemi: Sağ tık (contextmenu) ve inceleme kısayollarını engelle
+  useEffect(() => {
+    const handleContextMenu = (e) => {
+      e.preventDefault();
+      return false;
+    };
+
+    const handleKeyDown = (e) => {
+      // F12 veya Ctrl+Shift+I / J / C veya Ctrl+U (kaynak kod görüntüleme) engelle
+      if (
+        e.key === 'F12' ||
+        (e.ctrlKey && e.shiftKey && ['I', 'i', 'J', 'j', 'C', 'c'].includes(e.key)) ||
+        (e.ctrlKey && (e.key === 'U' || e.key === 'u'))
+      ) {
+        e.preventDefault();
+        return false;
+      }
+    };
+
+    document.addEventListener('contextmenu', handleContextMenu);
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('contextmenu', handleContextMenu);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
+
   const loadPendingFriendCount = async (userId) => {
     if (!userId) return;
     try {
@@ -134,21 +235,123 @@ export default function App() {
     }
   };
 
+  const loadFriendsData = async (userId) => {
+    if (!userId) return;
+    try {
+      // 1. Kabul edilmiş arkadaşlar
+      const { data: accepted } = await supabase
+        .from('friendships')
+        .select('user_id, friend_id')
+        .or(`user_id.eq.${userId},friend_id.eq.${userId}`)
+        .eq('status', 'accepted');
+
+      if (accepted) {
+        const ids = new Set();
+        accepted.forEach(f => {
+          ids.add(f.user_id === userId ? f.friend_id : f.user_id);
+        });
+        setFriendsSet(ids);
+      }
+
+      // 2. Kullanıcının gönderdiği bekleyen istekler
+      const { data: pendingSent } = await supabase
+        .from('friendships')
+        .select('friend_id')
+        .eq('user_id', userId)
+        .eq('status', 'pending');
+
+      if (pendingSent) {
+        const sentIds = new Set(pendingSent.map(p => p.friend_id));
+        setPendingSentRequests(sentIds);
+      }
+    } catch (e) {
+      console.warn('Friends data load err:', e);
+    }
+  };
+
+  const handleSendFriendRequestFromRoom = async (targetUser) => {
+    if (!currentUser?.id || !targetUser?.id || targetUser.id === currentUser.id) return;
+
+    if (friendsSet.has(targetUser.id)) {
+      setRoomEventToast({
+        type: 'join',
+        text: `${targetUser.username} ile zaten arkadaşsınız.`
+      });
+      setTimeout(() => setRoomEventToast(null), 3000);
+      return;
+    }
+
+    if (pendingSentRequests.has(targetUser.id)) {
+      setRoomEventToast({
+        type: 'join',
+        text: `${targetUser.username} kişisine zaten istek gönderildi.`
+      });
+      setTimeout(() => setRoomEventToast(null), 3000);
+      return;
+    }
+
+    try {
+      const { error } = await supabase
+        .from('friendships')
+        .insert({
+          user_id: currentUser.id,
+          friend_id: targetUser.id,
+          status: 'pending'
+        });
+
+      if (error) {
+        if (error.code === '23505') {
+          setRoomEventToast({
+            type: 'join',
+            text: 'Zaten bekleyen bir arkadaşlık isteği mevcut.'
+          });
+        } else {
+          setRoomEventToast({
+            type: 'join',
+            text: 'İstek gönderilemedi: ' + error.message
+          });
+        }
+      } else {
+        setPendingSentRequests(prev => new Set(prev).add(targetUser.id));
+        setRoomEventToast({
+          type: 'join',
+          text: `🎉 ${targetUser.username} kişisine arkadaşlık isteği gönderildi!`
+        });
+
+        if (socket.connected) {
+          socket.emit('friend:request', {
+            toUserCode: targetUser.user_code,
+            toUsername: targetUser.username,
+            fromUser: currentUser
+          });
+        }
+      }
+      setTimeout(() => setRoomEventToast(null), 3500);
+    } catch (err) {
+      console.warn('Send friend request err:', err);
+    }
+  };
+
   // 1. Check Supabase Auth Session
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
       setSession(currentSession);
       if (currentSession?.user) {
-        loadUserProfile(currentSession.user);
+        loadUserProfile(currentSession.user).finally(() => setIsAuthLoading(false));
+      } else {
+        setIsAuthLoading(false);
       }
+    }).catch(() => {
+      setIsAuthLoading(false);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, currentSession) => {
       setSession(currentSession);
       if (currentSession?.user) {
-        loadUserProfile(currentSession.user);
+        loadUserProfile(currentSession.user).finally(() => setIsAuthLoading(false));
       } else {
         setCurrentUser(null);
+        setIsAuthLoading(false);
       }
     });
 
@@ -190,12 +393,15 @@ export default function App() {
 
       setCurrentUser(userObj);
       loadPendingFriendCount(user.id);
+      loadFriendsData(user.id);
 
       if (socket.connected) {
         socket.emit('user:join', userObj);
       }
     } catch (e) {
       console.warn('Profile load err:', e);
+    } finally {
+      setIsAuthLoading(false);
     }
   };
 
@@ -242,11 +448,13 @@ export default function App() {
   useEffect(() => {
     if (!currentUser?.id) return;
     loadPendingFriendCount(currentUser.id);
+    loadFriendsData(currentUser.id);
 
     const fChannel = supabase
       .channel(`public:friendships-count-${currentUser.id}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'friendships' }, () => {
         loadPendingFriendCount(currentUser.id);
+        loadFriendsData(currentUser.id);
       })
       .subscribe();
 
@@ -319,9 +527,10 @@ export default function App() {
               soundEffects.playUserJoined();
               setRoomEventToast({
                 type: 'join',
-                text: `${user.username || 'Birisi'} odaya katıldı 👋`
+                text: `${user.username || 'Birisi'} odaya katıldı 👋`,
+                user: user
               });
-              setTimeout(() => setRoomEventToast(null), 3500);
+              setTimeout(() => setRoomEventToast(null), 4500);
             }
           });
 
@@ -434,12 +643,16 @@ export default function App() {
 
   // 4. Socket & WebRTC setup (Local & Fallback)
   useEffect(() => {
+    // Güvenlik: Oturum açılmadan veya hesap oluşturulmadan Socket bağlantısı kurulmaz
+    if (!currentUser) {
+      if (socket.connected) socket.disconnect();
+      return;
+    }
+
     socket.connect();
 
     socket.on('connect', () => {
-      if (currentUser) {
-        socket.emit('user:join', currentUser);
-      }
+      socket.emit('user:join', currentUser);
     });
 
     socket.on('init:state', (state) => {
@@ -521,6 +734,12 @@ export default function App() {
       if (peer && peer.id && peer.id !== socket.id) {
         if (activeVoiceChannelRef.current === roomId) {
           soundEffects.playUserJoined();
+          setRoomEventToast({
+            type: 'join',
+            text: `${peer.username || 'Birisi'} odaya katıldı 👋`,
+            user: peer
+          });
+          setTimeout(() => setRoomEventToast(null), 4500);
         }
         await webrtc.createPeerConnection(peer.id, false);
       }
@@ -735,8 +954,15 @@ export default function App() {
   const handleSignOut = async () => {
     if (activeVoiceChannel) handleLeaveVoice();
     await supabase.auth.signOut();
+    if (socket.connected) socket.disconnect();
     setCurrentUser(null);
     setSession(null);
+    setFriendsSet(new Set());
+    setPendingSentRequests(new Set());
+    setMessages({});
+    setChannels({ text: [], voice: [] });
+    setVoiceRooms({});
+    setAllUsers([]);
   };
 
   const handleUpdateProfile = async (updated) => {
@@ -956,12 +1182,50 @@ export default function App() {
     setIncomingInvite(null);
   };
 
+  // Güvenlik Kapısı 1: Oturum kontrolü devam ederken DOM'a hiçbir kanal/mesaj yüklenmez
+  if (isAuthLoading) {
+    return (
+      <div 
+        onContextMenu={(e) => e.preventDefault()} 
+        className="h-screen w-screen bg-[#0d1117] flex flex-col items-center justify-center space-y-4 select-none"
+      >
+        <TurkCordLogo size={68} className="animate-pulse drop-shadow-2xl" />
+        <div className="flex items-center space-x-2 text-sm text-[#7d8590]">
+          <div className="w-2 h-2 rounded-full bg-indigo-500 animate-ping" />
+          <span>Güvenli Oturum Başlatılıyor...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // Güvenlik Kapısı 2: Kullanıcı giriş yapmamış veya hesabı yoksa ana panel, kanallar ve mesajlar DOM'da dahi bulunmaz
+  if (!currentUser) {
+    return (
+      <div 
+        onContextMenu={(e) => e.preventDefault()} 
+        className="h-screen w-screen bg-[#0d1117] flex items-center justify-center relative select-none"
+      >
+        <AuthModal 
+          onAuthSuccess={(user) => {
+            setCurrentUser(user);
+            loadFriendsData(user.id);
+            loadPendingFriendCount(user.id);
+            if (socket.connected) socket.emit('user:join', user);
+          }} 
+        />
+      </div>
+    );
+  }
+
   const currentVoiceRoomUsers = activeVoiceChannel ? (voiceRooms[activeVoiceChannel] || []) : [];
   const currentVoiceObj = channels.voice?.find(v => v.id === activeVoiceChannel);
   const currentTextObj = channels.text?.find(c => c.id === activeTextChannel) || channels.text?.[0];
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#0d1117] text-[#e6edf3] font-sans antialiased relative">
+    <div 
+      onContextMenu={(e) => e.preventDefault()} 
+      className="flex h-screen w-screen overflow-hidden bg-[#0d1117] text-[#e6edf3] font-sans antialiased relative select-none"
+    >
       {/* Canlı Oda Daveti Bildirimi (Floating Toast) */}
       {incomingInvite && (
         <div className="absolute top-5 left-1/2 -translate-x-1/2 z-50 bg-[#161b22] border-2 border-emerald-500 rounded-2xl p-4 shadow-2xl flex items-center space-x-4 animate-bounce-subtle">
@@ -1039,6 +1303,33 @@ export default function App() {
               Ses Odası Bildirimi
             </div>
           </div>
+
+          {/* Odaya katılan kişiyle arkadaş değilsek doğrudan istek gönderme butonu */}
+          {roomEventToast.type === 'join' && roomEventToast.user && roomEventToast.user.id !== currentUser?.id && (
+            <div className="pl-2 border-l border-[#30363d] ml-1 flex-shrink-0">
+              {friendsSet.has(roomEventToast.user.id) ? (
+                <span className="flex items-center space-x-1 text-[10px] font-bold text-emerald-400 px-2 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/30">
+                  <Check className="w-3 h-3" />
+                  <span>Arkadaşsınız</span>
+                </span>
+              ) : pendingSentRequests.has(roomEventToast.user.id) ? (
+                <span className="flex items-center space-x-1 text-[10px] font-bold text-amber-400 px-2 py-1 rounded-lg bg-amber-500/10 border border-amber-500/30">
+                  <Clock className="w-3 h-3" />
+                  <span>İstek Gönderildi</span>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => handleSendFriendRequestFromRoom(roomEventToast.user)}
+                  className="flex items-center space-x-1.5 px-2.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow-md transition transform hover:scale-105 active:scale-95"
+                  title={`${roomEventToast.user.username} kişisine arkadaşlık isteği gönder`}
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>Arkadaş Ekle</span>
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -1050,22 +1341,44 @@ export default function App() {
           {/* Header */}
           <div className="h-16 px-5 border-b border-[#30363d] flex items-center justify-between">
             <div className="flex items-center space-x-2.5">
-              <div className="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center text-white text-lg font-black shadow-md">
-                TC
-              </div>
+              <TurkCordLogo size={36} className="drop-shadow-md" />
               <div>
                 <h1 className="text-base font-extrabold text-white leading-tight">TurkCord</h1>
                 <p className="text-[11px] text-[#7d8590]">Sıfır Gecikmeli Ses & Sohbet</p>
               </div>
             </div>
 
-            <button
-              onClick={() => setShowSettings(true)}
-              className="p-2 rounded-xl text-[#7d8590] hover:text-white hover:bg-[#21262d] transition"
-              title="Ayarlar"
-            >
-              <Settings className="w-4 h-4" />
-            </button>
+            <div className="flex items-center space-x-1.5">
+              {!isStandaloneApp && (
+                <button
+                  type="button"
+                  onClick={handleInstallApp}
+                  className="flex items-center space-x-1 px-2.5 py-1.5 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-xs font-bold transition shadow-sm"
+                  title="TurkCord'u Masaüstü Uygulaması Olarak İndir / Yükle"
+                >
+                  <Download className="w-3.5 h-3.5 text-indigo-400" />
+                  <span className="hidden sm:inline">İndir</span>
+                </button>
+              )}
+
+              {isStandaloneApp && (
+                <div
+                  className="flex items-center space-x-1 px-2 py-1 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[10px] font-bold"
+                  title="Masaüstü Uygulaması Olarak Çalışıyor"
+                >
+                  <Laptop className="w-3 h-3" />
+                  <span>Masaüstü</span>
+                </div>
+              )}
+
+              <button
+                onClick={() => setShowSettings(true)}
+                className="p-2 rounded-xl text-[#7d8590] hover:text-white hover:bg-[#21262d] transition"
+                title="Ayarlar"
+              >
+                <Settings className="w-4 h-4" />
+              </button>
+            </div>
           </div>
 
           {/* 3 Net Sekme: Ses Odaları | Metin | Kadro */}
@@ -1314,6 +1627,19 @@ export default function App() {
                               >
                                 <span>{u.avatar || '🎮'}</span>
                                 <span className="max-w-[70px] truncate">{u.username}</span>
+                                {u.id !== currentUser?.id && !friendsSet.has(u.id) && !pendingSentRequests.has(u.id) && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleSendFriendRequestFromRoom(u);
+                                    }}
+                                    className="p-0.5 rounded hover:bg-indigo-600 text-indigo-300 hover:text-white transition ml-0.5"
+                                    title={`${u.username} kişisine arkadaşlık isteği gönder`}
+                                  >
+                                    <UserPlus className="w-2.5 h-2.5" />
+                                  </button>
+                                )}
                               </div>
                             );
                           })}
@@ -1398,7 +1724,7 @@ export default function App() {
             >
               <div className="relative flex-shrink-0">
                 <span className="text-2xl">{currentUser?.avatar || '🎮'}</span>
-                <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-[#161b22]" />
+                <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-emerald-400 border-2 border-[#161b22] shadow-[0_0_8px_#10b981]" />
               </div>
               <div className="truncate">
                 <div className="text-sm font-bold text-white truncate leading-tight">
@@ -1631,6 +1957,82 @@ export default function App() {
                             </span>
                           )}
                         </div>
+
+                        {/* Arkadaşlık Durumu & İstek Gönderme */}
+                        {!isSelf && (
+                          <div className="mt-2 flex items-center justify-center">
+                            {friendsSet.has(u.id) ? (
+                              <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[10px] font-bold">
+                                <Check className="w-3 h-3" />
+                                <span>Arkadaş</span>
+                              </span>
+                            ) : pendingSentRequests.has(u.id) ? (
+                              <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-[10px] font-bold">
+                                <Clock className="w-3 h-3" />
+                                <span>İstek Gönderildi</span>
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleSendFriendRequestFromRoom(u);
+                                }}
+                                className="inline-flex items-center space-x-1.5 px-3 py-1 rounded-xl bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 text-xs font-bold transition shadow-sm hover:scale-105 active:scale-95"
+                                title={`${u.username} kişisine arkadaşlık isteği gönder`}
+                              >
+                                <UserPlus className="w-3.5 h-3.5" />
+                                <span>Arkadaş Ekle</span>
+                              </button>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Kişiye Özel Ses Seviyesi Slider'ı (0% - 200%) */}
+                        {!isSelf && (
+                          <div className="w-full mt-3 pt-2.5 border-t border-[#30363d]/70 px-1">
+                            <div className="flex items-center justify-between text-[11px] mb-1">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleToggleUserMute(u.id);
+                                }}
+                                className="flex items-center space-x-1 text-[#7d8590] hover:text-white transition group/btn"
+                                title={(userVolumes[u.id] ?? 100) === 0 ? "Sesi Aç" : "Bu Kişiyi Sustur"}
+                              >
+                                {(userVolumes[u.id] ?? 100) === 0 ? (
+                                  <VolumeX className="w-3.5 h-3.5 text-rose-400 group-hover/btn:scale-110 transition" />
+                                ) : (
+                                  <Volume2 className="w-3.5 h-3.5 text-indigo-400 group-hover/btn:scale-110 transition" />
+                                )}
+                                <span className="font-semibold text-[11px]">Kullanıcı Sesi</span>
+                              </button>
+
+                              <span className={`font-mono font-bold text-[10px] px-1.5 py-0.5 rounded transition ${
+                                (userVolumes[u.id] ?? 100) > 100 
+                                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' 
+                                  : (userVolumes[u.id] ?? 100) === 0 
+                                  ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' 
+                                  : 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30'
+                              }`}>
+                                %{(userVolumes[u.id] ?? 100)}
+                              </span>
+                            </div>
+
+                            <input
+                              type="range"
+                              min="0"
+                              max="200"
+                              step="5"
+                              value={userVolumes[u.id] ?? 100}
+                              onChange={(e) => handleUserVolumeChange(u.id, Number(e.target.value))}
+                              onClick={(e) => e.stopPropagation()}
+                              className="w-full h-1.5 bg-[#0d1117] rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                              title={`Ses Düzeyi: %${userVolumes[u.id] ?? 100}`}
+                            />
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -1742,14 +2144,6 @@ export default function App() {
         )}
       </main>
 
-      {/* Auth Modal (Kayıt / Giriş) */}
-      {!currentUser && (
-        <AuthModal onAuthSuccess={(user) => {
-          setCurrentUser(user);
-          if (socket.connected) socket.emit('user:join', user);
-        }} />
-      )}
-
       {/* Settings Modal */}
       {showSettings && (
         <SettingsModal
@@ -1757,6 +2151,85 @@ export default function App() {
           onClose={() => setShowSettings(false)}
           onUpdateUser={handleUpdateProfile}
         />
+      )}
+
+      {/* Masaüstü Uygulaması Yükleme Modalı (PWA) */}
+      {showInstallGuideModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="w-full max-w-lg rounded-3xl bg-[#161b22] border border-indigo-500/40 p-6 sm:p-7 space-y-6 shadow-2xl relative">
+            <button
+              type="button"
+              onClick={() => setShowInstallGuideModal(false)}
+              className="absolute top-5 right-5 p-2 rounded-xl text-[#7d8590] hover:text-white hover:bg-[#21262d] transition"
+              title="Kapat"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center space-x-4">
+              <TurkCordLogo size={56} className="drop-shadow-xl" />
+              <div>
+                <div className="inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 text-[11px] font-bold mb-1">
+                  <Laptop className="w-3 h-3" />
+                  <span>Windows / Masaüstü Sürümü</span>
+                </div>
+                <h3 className="text-xl font-black text-white tracking-tight">TurkCord Masaüstü Uygulaması</h3>
+              </div>
+            </div>
+
+            <div className="space-y-3 text-sm text-[#c9d1d9] bg-[#0d1117] p-4 rounded-2xl border border-[#30363d]/60">
+              <div className="flex items-start space-x-3">
+                <span className="text-emerald-400 font-bold">⚡</span>
+                <p><strong className="text-white">Bağımsız Pencere:</strong> Tarayıcı sekmelerinden bağımsız, görev çubuğuna ve masaüstüne sabitlenebilen temiz uygulama penceresi.</p>
+              </div>
+              <div className="flex items-start space-x-3">
+                <span className="text-indigo-400 font-bold">🎮</span>
+                <p><strong className="text-white">Ultra Düşük Gecikmeli Ses:</strong> Oyun oynarken arka planda minimum kaynak tüketimi ve kesintisiz WebRTC ses akışı.</p>
+              </div>
+              <div className="flex items-start space-x-3">
+                <span className="text-amber-400 font-bold">🚀</span>
+                <p><strong className="text-white">Hızlı Başlatma:</strong> Bilgisayarınızı açtığınızda doğrudan masaüstü kısayolundan tek tıkla sohbete katılın.</p>
+              </div>
+            </div>
+
+            {deferredPrompt ? (
+              <div className="space-y-3">
+                <button
+                  type="button"
+                  onClick={handleInstallApp}
+                  className="w-full py-3.5 px-4 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-sm shadow-xl shadow-indigo-600/30 flex items-center justify-center space-x-2 transition transform hover:-translate-y-0.5"
+                >
+                  <Download className="w-5 h-5" />
+                  <span>Şimdi Masaüstüne Yükle (Otomatik)</span>
+                </button>
+                <p className="text-center text-xs text-[#7d8590]">
+                  Chrome, Edge ve Chromium tarayıcıları tek tıkla masaüstü kısayolu oluşturur.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="p-3.5 rounded-2xl bg-[#0d1117] border border-[#30363d] space-y-2">
+                  <p className="text-xs font-bold text-white uppercase tracking-wider flex items-center space-x-1.5">
+                    <span>💡</span>
+                    <span>Tarayıcıdan Manuel Yükleme Adımları:</span>
+                  </p>
+                  <ol className="text-xs text-[#8b949e] space-y-1.5 list-decimal list-inside pl-1">
+                    <li>Tarayıcınızın adres çubuğunun sağındaki <strong className="text-white">Uygulama Yükle</strong> (veya monitör/indirme) simgesine tıklayın.</li>
+                    <li>Veya sağ üstteki <strong className="text-white">üç nokta (⋮)</strong> menüsünden <strong className="text-white">"TurkCord uygulamasını yükle"</strong> seçeneğini seçin.</li>
+                    <li>Açılan onay kutusunda <strong className="text-indigo-400 font-bold">"Yükle"</strong> butonuna basın. Masaüstünüze simge eklenecektir!</li>
+                  </ol>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowInstallGuideModal(false)}
+                  className="w-full py-3 px-4 rounded-2xl bg-[#21262d] hover:bg-[#30363d] text-white font-bold text-sm transition"
+                >
+                  Anladım, Kapat
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {/* Şifreli Oda Giriş Modalı */}

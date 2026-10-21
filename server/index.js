@@ -59,10 +59,17 @@ io.on('connection', (socket) => {
 
   // User join / handshake
   socket.on('user:join', ({ id, username, avatar, user_code }) => {
+    // Güvenlik Önlemi: Hesabı olmayan veya giriş yapmamış kullanıcılar kanallara ve mesajlara erişemez
+    if (!id || !username || typeof username !== 'string' || !username.trim()) {
+      console.warn(`[Security] Yetkisiz bağlantı isteği engellendi: ${socket.id}`);
+      socket.emit('auth:error', { message: 'Oturum açmadan kanallara ve sohbet geçmişine erişilemez.' });
+      return;
+    }
+
     users[socket.id] = {
       socketId: socket.id,
-      id: id || socket.id,
-      username: username || `Oyuncu-${socket.id.slice(0, 4)}`,
+      id: id,
+      username: username.trim(),
       avatar: avatar || '🎮',
       user_code: user_code || null,
       currentVoiceRoom: null,

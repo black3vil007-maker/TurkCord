@@ -38,6 +38,93 @@ class WebRTCManager {
     this.audioSettings = this.loadAudioSettings();
     this.voiceGateHangTimeout = null;
     this.isGateOpen = false;
+
+    // Per-user volume control (0% to 200%)
+    this.peerVolumes = this.loadPeerVolumes();
+    this.peerGainNodes = {};
+    this.remoteAudioContext = null;
+  }
+
+  loadPeerVolumes() {
+    try {
+      const saved = localStorage.getItem('turkcord_peer_volumes');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {}
+    return {};
+  }
+
+  setPeerVolume(peerId, volumePercent) {
+    const clamped = Math.min(200, Math.max(0, volumePercent));
+    this.peerVolumes[peerId] = clamped;
+    try {
+      localStorage.setItem('turkcord_peer_volumes', JSON.stringify(this.peerVolumes));
+    } catch (e) {}
+
+    // 1. Web Audio Gain Node (supports up to 200% boost!)
+    if (this.peerGainNodes[peerId]) {
+      this.peerGainNodes[peerId].gain.setTargetAtTime(
+        this.isDeafened ? 0 : (clamped / 100),
+        this.remoteAudioContext?.currentTime || 0,
+        0.01
+      );
+    }
+
+    // 2. Fallback HTML audio element
+    const peer = this.peers[peerId];
+    if (peer && peer.audioEl && !this.peerGainNodes[peerId]) {
+      peer.audioEl.volume = Math.min(1.0, clamped / 100);
+      peer.audioEl.muted = this.isDeafened || clamped === 0;
+    }
+
+    return clamped;
+  }
+
+  getPeerVolume(peerId) {
+    return this.peerVolumes[peerId] ?? 100;
+  }
+
+  setupPeerAudio(peerId, remoteStream) {
+    if (!remoteStream) return;
+    const vol = this.peerVolumes[peerId] ?? 100;
+
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!this.remoteAudioContext || this.remoteAudioContext.state === 'closed') {
+        this.remoteAudioContext = new AudioCtx({ sampleRate: 48000 });
+      }
+      if (this.remoteAudioContext.state === 'suspended') {
+        this.remoteAudioContext.resume().catch(() => {});
+      }
+
+      if (this.peerGainNodes[peerId]) {
+        try { this.peerGainNodes[peerId].disconnect(); } catch (e) {}
+      }
+
+      const source = this.remoteAudioContext.createMediaStreamSource(remoteStream);
+      const gainNode = this.remoteAudioContext.createGain();
+      gainNode.gain.value = this.isDeafened ? 0 : (vol / 100);
+
+      source.connect(gainNode);
+      gainNode.connect(this.remoteAudioContext.destination);
+      this.peerGainNodes[peerId] = gainNode;
+
+      // Keep audioEl muted so sound doesn't play twice
+      const peer = this.peers[peerId];
+      if (peer && peer.audioEl) {
+        peer.audioEl.srcObject = remoteStream;
+        peer.audioEl.muted = true;
+        peer.audioEl.play().catch(() => {});
+      }
+    } catch (e) {
+      console.warn('[WebRTC] Web Audio peer gain fallback to HTMLAudioElement:', e);
+      const peer = this.peers[peerId];
+      if (peer && peer.audioEl) {
+        peer.audioEl.srcObject = remoteStream;
+        peer.audioEl.muted = this.isDeafened;
+        peer.audioEl.volume = Math.min(1.0, Math.max(0, vol / 100));
+        peer.audioEl.play().catch(() => {});
+      }
+    }
   }
 
   loadAudioSettings() {
@@ -432,12 +519,9 @@ class WebRTCManager {
         });
       }
 
-      // If audio track, attach to hidden audio element
+      // If audio track, route through individual volume gain controller
       if (event.track && event.track.kind === 'audio') {
-        audioEl.srcObject = remoteStream;
-        audioEl.play().catch(e => {
-          console.warn('[WebRTC] Audio play waiting for user gesture:', e);
-        });
+        this.setupPeerAudio(peerId, remoteStream);
       }
 
       this.optimizePeer(pc);
@@ -754,7 +838,11 @@ class WebRTCManager {
       this.toggleMute();
     }
 
-    // Mute/unmute all peer audio elements
+    // Mute/unmute all peer audio elements and Web Audio gain nodes
+    for (const [peerId, gainNode] of Object.entries(this.peerGainNodes)) {
+      const vol = this.peerVolumes[peerId] ?? 100;
+      gainNode.gain.value = this.isDeafened ? 0 : (vol / 100);
+    }
     for (const peer of Object.values(this.peers)) {
       if (peer.audioEl) {
         peer.audioEl.muted = this.isDeafened;
@@ -767,6 +855,11 @@ class WebRTCManager {
 
   // Close specific peer
   closePeer(peerId) {
+    if (this.peerGainNodes[peerId]) {
+      try { this.peerGainNodes[peerId].disconnect(); } catch (e) {}
+      delete this.peerGainNodes[peerId];
+    }
+
     const peer = this.peers[peerId];
     if (peer) {
       if (peer.audioEl) {
@@ -787,6 +880,16 @@ class WebRTCManager {
 
     for (const peerId of Object.keys(this.peers)) {
       this.closePeer(peerId);
+    }
+
+    for (const gainNode of Object.values(this.peerGainNodes)) {
+      try { gainNode.disconnect(); } catch (e) {}
+    }
+    this.peerGainNodes = {};
+
+    if (this.remoteAudioContext && this.remoteAudioContext.state !== 'closed') {
+      try { this.remoteAudioContext.close(); } catch (e) {}
+      this.remoteAudioContext = null;
     }
 
     if (this.vadInterval) {
