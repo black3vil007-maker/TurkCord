@@ -33,11 +33,15 @@ import {
   Download,
   Laptop,
   UserPlus,
-  Clock
+  Clock,
+  ShieldAlert,
+  UserMinus,
+  Ban
 } from 'lucide-react';
 import AuthModal from './components/AuthModal';
 import FriendsPanel from './components/FriendsPanel';
 import SettingsModal from './components/SettingsModal';
+import AdminPanelModal from './components/AdminPanelModal';
 import TurkCordLogo from './components/TurkCordLogo';
 import { realtimeSignaling } from './services/realtimeSignaling';
 
@@ -47,6 +51,9 @@ export default function App() {
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [friendsSet, setFriendsSet] = useState(new Set());
   const [pendingSentRequests, setPendingSentRequests] = useState(new Set());
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [isForceMuted, setIsForceMuted] = useState(false);
+  const [adminNoticeModal, setAdminNoticeModal] = useState(null);
   const [activeTab, setActiveTab] = useState('voice'); // 'voice', 'chat', 'friends'
   const [channels, setChannels] = useState({ text: [], voice: [] });
   const [activeTextChannel, setActiveTextChannel] = useState('genel');
@@ -375,6 +382,22 @@ export default function App() {
         .eq('id', user.id)
         .single();
 
+      const userEmail = user.email?.toLowerCase();
+      const isSuperAdmin = userEmail === 'aerayyoruk@gmail.com';
+
+      // Pasif Hesap Kontrolü: Admin hariç pasife alınmış hesaplar sisteme giriş yapamaz
+      if (profile?.is_passive === true && !isSuperAdmin) {
+        await supabase.auth.signOut();
+        setCurrentUser(null);
+        setIsAuthLoading(false);
+        setAdminNoticeModal({
+          title: 'Hesabınız Pasife Alındı',
+          message: 'Hesabınız yönetici tarafından pasife alınmıştır. Sisteme giriş izniniz durduruldu.',
+          icon: '🚫'
+        });
+        return;
+      }
+
       let userCode = profile?.user_code;
       if (!userCode) {
         userCode = Math.floor(1000000000 + Math.random() * 9000000000).toString();
@@ -386,6 +409,8 @@ export default function App() {
       const userObj = {
         id: user.id,
         email: user.email,
+        isAdmin: isSuperAdmin || Boolean(profile?.is_admin),
+        isPassive: Boolean(profile?.is_passive),
         username: profile?.username || user.user_metadata?.username || user.email.split('@')[0],
         avatar: profile?.avatar || user.user_metadata?.avatar || '🎮',
         user_code: userCode
@@ -500,6 +525,140 @@ export default function App() {
       supabase.removeChannel(channel);
     };
   }, [currentUser]);
+
+  const isAdmin = Boolean(currentUser?.email?.toLowerCase() === 'aerayyoruk@gmail.com' || currentUser?.isAdmin);
+
+  // 3. Admin Moderasyon Dinleyicisi (Supabase Realtime)
+  useEffect(() => {
+    if (!currentUser?.id) return;
+
+    const adminChannel = supabase
+      .channel('public:admin-moderation')
+      .on('broadcast', { event: 'admin:kick' }, ({ payload }) => {
+        if (payload?.targetUserId === currentUser.id) {
+          handleLeaveVoice();
+          setAdminNoticeModal({
+            title: 'Odadan Çıkarıldınız',
+            message: 'Yönetici tarafından ses odasından çıkarıldınız.',
+            icon: '👢'
+          });
+        }
+      })
+      .on('broadcast', { event: 'admin:mute' }, ({ payload }) => {
+        if (payload?.targetUserId === currentUser.id) {
+          setIsForceMuted(Boolean(payload.isMuted));
+          if (payload.isMuted) {
+            webrtc.toggleMute(true);
+            setCurrentUser(prev => ({ ...prev, isMuted: true }));
+            setAdminNoticeModal({
+              title: 'Sessize Alındınız',
+              message: 'Yönetici tarafından sistem genelinde susturuldunuz.',
+              icon: '🔇'
+            });
+          } else {
+            setAdminNoticeModal({
+              title: 'Ses Kilidi Açıldı',
+              message: 'Yönetici mikrofon kilidinizi açtı.',
+              icon: '🔊'
+            });
+          }
+        }
+      })
+      .on('broadcast', { event: 'admin:deactivate' }, async ({ payload }) => {
+        if (payload?.targetUserId === currentUser.id && currentUser.email?.toLowerCase() !== 'aerayyoruk@gmail.com') {
+          handleLeaveVoice();
+          if (socket.connected) socket.disconnect();
+          await supabase.auth.signOut();
+          setCurrentUser(null);
+          setAdminNoticeModal({
+            title: 'Hesabınız Pasife Alındı',
+            message: 'Hesabınız yönetici tarafından pasife alınmıştır. Sisteme erişiminiz durduruldu.',
+            icon: '🚫'
+          });
+        }
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(adminChannel);
+    };
+  }, [currentUser?.id]);
+
+  // Admin Aksiyonları: aerayyoruk@gmail.com
+  const handleAdminKickUser = async (targetUser) => {
+    if (!isAdmin || !targetUser?.id) return;
+    try {
+      supabase.channel('public:admin-moderation').send({
+        type: 'broadcast',
+        event: 'admin:kick',
+        payload: { targetUserId: targetUser.id }
+      });
+      if (socket.connected) {
+        socket.emit('admin:kick', { targetUserId: targetUser.id });
+      }
+      setRoomEventToast({
+        type: 'leave',
+        text: `🛡️ ${targetUser.username} odadan atıldı.`
+      });
+      setTimeout(() => setRoomEventToast(null), 3500);
+    } catch (e) {
+      console.warn('Admin kick error:', e);
+    }
+  };
+
+  const handleAdminToggleMute = async (targetUser, currentForceMute) => {
+    if (!isAdmin || !targetUser?.id) return;
+    const newMuteState = !currentForceMute;
+    try {
+      supabase.channel('public:admin-moderation').send({
+        type: 'broadcast',
+        event: 'admin:mute',
+        payload: { targetUserId: targetUser.id, isMuted: newMuteState }
+      });
+      if (socket.connected) {
+        socket.emit('admin:mute', { targetUserId: targetUser.id, isMuted: newMuteState });
+      }
+      setRoomEventToast({
+        type: 'join',
+        text: newMuteState ? `🔇 ${targetUser.username} susturuldu.` : `🔊 ${targetUser.username} sesi açıldı.`
+      });
+      setTimeout(() => setRoomEventToast(null), 3500);
+    } catch (e) {
+      console.warn('Admin mute error:', e);
+    }
+  };
+
+  const handleAdminTogglePassive = async (targetUser, isCurrentlyPassive) => {
+    if (!isAdmin || !targetUser?.id) return;
+    const nextPassive = !isCurrentlyPassive;
+    try {
+      await supabase
+        .from('profiles')
+        .update({ is_passive: nextPassive })
+        .eq('id', targetUser.id);
+
+      if (nextPassive) {
+        supabase.channel('public:admin-moderation').send({
+          type: 'broadcast',
+          event: 'admin:deactivate',
+          payload: { targetUserId: targetUser.id }
+        });
+        if (socket.connected) {
+          socket.emit('admin:deactivate', { targetUserId: targetUser.id });
+        }
+      }
+
+      setRoomEventToast({
+        type: nextPassive ? 'leave' : 'join',
+        text: nextPassive
+          ? `🚫 ${targetUser.username} hesabı pasife alındı.`
+          : `✅ ${targetUser.username} hesabı aktife alındı.`
+      });
+      setTimeout(() => setRoomEventToast(null), 3500);
+    } catch (e) {
+      console.warn('Admin toggle passive error:', e);
+    }
+  };
 
   // 3. Supabase Realtime Presence & Cloud WebRTC Signaling (Works on Vercel & P2P)
   useEffect(() => {
@@ -785,6 +944,49 @@ export default function App() {
       setSpeakingUsers(prev => ({ ...prev, [peerId]: isSpeaking }));
     });
 
+    // Admin Socket Dinleyicileri
+    socket.on('admin:kicked', ({ reason }) => {
+      handleLeaveVoice();
+      setAdminNoticeModal({
+        title: 'Odadan Çıkarıldınız',
+        message: reason || 'Yönetici tarafından ses odasından çıkarıldınız.',
+        icon: '👢'
+      });
+    });
+
+    socket.on('admin:force-muted', ({ isMuted }) => {
+      setIsForceMuted(Boolean(isMuted));
+      if (isMuted) {
+        webrtc.toggleMute(true);
+        setCurrentUser(prev => ({ ...prev, isMuted: true }));
+        setAdminNoticeModal({
+          title: 'Sessize Alındınız',
+          message: 'Yönetici tarafından mikrofonunuz kapatıldı.',
+          icon: '🔇'
+        });
+      } else {
+        setAdminNoticeModal({
+          title: 'Ses Kilidi Açıldı',
+          message: 'Yönetici mikrofon kilidinizi açtı.',
+          icon: '🔊'
+        });
+      }
+    });
+
+    socket.on('admin:deactivated', async ({ message }) => {
+      if (currentUser?.email?.toLowerCase() !== 'aerayyoruk@gmail.com') {
+        handleLeaveVoice();
+        if (socket.connected) socket.disconnect();
+        await supabase.auth.signOut();
+        setCurrentUser(null);
+        setAdminNoticeModal({
+          title: 'Hesabınız Pasife Alındı',
+          message: message || 'Hesabınız yönetici tarafından pasife alınmıştır.',
+          icon: '🚫'
+        });
+      }
+    });
+
     webrtc.onSpeakingChange = (id, isSpeaking) => {
       const myId = currentUser?.id || 'self';
       setSpeakingUsers(prev => ({ ...prev, [myId]: isSpeaking }));
@@ -816,6 +1018,9 @@ export default function App() {
       socket.off('webrtc:answer');
       socket.off('webrtc:ice-candidate');
       socket.off('voice:peer-speaking');
+      socket.off('admin:kicked');
+      socket.off('admin:force-muted');
+      socket.off('admin:deactivated');
     };
   }, [currentUser]);
 
@@ -875,6 +1080,14 @@ export default function App() {
   };
 
   const handleToggleMute = () => {
+    if (isForceMuted) {
+      setAdminNoticeModal({
+        title: 'Mikrofon Kilitli',
+        message: 'Yönetici tarafından sistem genelinde susturulduğunuz için mikrofonunuzu açamazsınız.',
+        icon: '🔇'
+      });
+      return;
+    }
     const isMuted = webrtc.toggleMute();
     setCurrentUser(prev => ({ ...prev, isMuted }));
     realtimeSignaling.setAudioState(isMuted, webrtc.isDeafened);
@@ -1371,6 +1584,18 @@ export default function App() {
                 </div>
               )}
 
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => setShowAdminPanel(true)}
+                  className="flex items-center space-x-1 px-2.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-black transition shadow-sm"
+                  title="TurkCord Yönetim Paneli (Süper Admin: aerayyoruk@gmail.com)"
+                >
+                  <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
+                  <span className="hidden sm:inline">Admin</span>
+                </button>
+              )}
+
               <button
                 onClick={() => setShowSettings(true)}
                 className="p-2 rounded-xl text-[#7d8590] hover:text-white hover:bg-[#21262d] transition"
@@ -1727,8 +1952,13 @@ export default function App() {
                 <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-emerald-400 border-2 border-[#161b22] shadow-[0_0_8px_#10b981]" />
               </div>
               <div className="truncate">
-                <div className="text-sm font-bold text-white truncate leading-tight">
-                  {currentUser?.username || 'Misafir'}
+                <div className="text-sm font-bold text-white truncate leading-tight flex items-center space-x-1">
+                  <span className="truncate">{currentUser?.username || 'Misafir'}</span>
+                  {isAdmin && (
+                    <span className="px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[9px] font-black flex-shrink-0">
+                      ADMIN
+                    </span>
+                  )}
                 </div>
                 <div className="text-[10px] font-mono text-indigo-400 truncate">
                   ID: {currentUser?.user_code || '------'}
@@ -2033,6 +2263,49 @@ export default function App() {
                             />
                           </div>
                         )}
+
+                        {/* Admin Hızlı Moderasyon Butonları */}
+                        {isAdmin && !isSelf && (
+                          <div className="w-full mt-2 pt-2 border-t border-amber-500/30 flex items-center justify-between gap-1">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleAdminKickUser(u);
+                              }}
+                              className="flex-1 py-1 px-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-black border border-amber-500/40 text-[10px] font-bold transition flex items-center justify-center space-x-1"
+                              title="Bu kullanıcıyı odadan at"
+                            >
+                              <UserMinus className="w-3 h-3" />
+                              <span>Odadan At</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleAdminToggleMute(u, speakingUsers[u.id] === 'muted');
+                              }}
+                              className="flex-1 py-1 px-1.5 rounded-lg bg-[#21262d] hover:bg-rose-500 text-rose-300 hover:text-white border border-[#30363d] text-[10px] font-bold transition flex items-center justify-center space-x-1"
+                              title="Bu kullanıcıyı sistem genelinde sustur"
+                            >
+                              <MicOff className="w-3 h-3" />
+                              <span>Sustur</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleAdminTogglePassive(u, false);
+                              }}
+                              className="py-1 px-2 rounded-lg bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/40 text-[10px] font-bold transition flex items-center justify-center"
+                              title="Hesabı pasife çek (giriş yapamaz)"
+                            >
+                              <Ban className="w-3 h-3" />
+                            </button>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -2151,6 +2424,42 @@ export default function App() {
           onClose={() => setShowSettings(false)}
           onUpdateUser={handleUpdateProfile}
         />
+      )}
+
+      {/* Admin Yönetim Paneli Modalı */}
+      {showAdminPanel && isAdmin && (
+        <AdminPanelModal
+          currentUser={currentUser}
+          allUsers={allUsers}
+          voiceRooms={voiceRooms}
+          channels={channels}
+          onClose={() => setShowAdminPanel(false)}
+          onKickUser={handleAdminKickUser}
+          onToggleMute={handleAdminToggleMute}
+          onTogglePassive={handleAdminTogglePassive}
+        />
+      )}
+
+      {/* Admin Bildirim / Uyarı Modalı */}
+      {adminNoticeModal && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 select-none animate-in fade-in duration-150">
+          <div className="w-full max-w-sm rounded-3xl bg-[#161b22] border-2 border-amber-500/50 p-6 text-center space-y-4 shadow-2xl">
+            <div className="w-16 h-16 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center text-3xl mx-auto">
+              {adminNoticeModal.icon || '⚠️'}
+            </div>
+            <h3 className="text-lg font-black text-white">{adminNoticeModal.title}</h3>
+            <p className="text-xs text-[#c9d1d9] leading-relaxed bg-[#0d1117] p-3 rounded-xl border border-[#30363d]">
+              {adminNoticeModal.message}
+            </p>
+            <button
+              type="button"
+              onClick={() => setAdminNoticeModal(null)}
+              className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs transition"
+            >
+              Tamam
+            </button>
+          </div>
+        </div>
       )}
 
       {/* Masaüstü Uygulaması Yükleme Modalı (PWA) */}

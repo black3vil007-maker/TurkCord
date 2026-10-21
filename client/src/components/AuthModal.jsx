@@ -45,6 +45,17 @@ export default function AuthModal({ onAuthSuccess }) {
         .eq('id', data.user.id)
         .single();
 
+      const userEmail = data.user.email?.toLowerCase();
+      const isSuperAdmin = userEmail === 'aerayyoruk@gmail.com';
+
+      // Pasif Hesap Kontrolü: Admin hariç pasife alınmış hesaplar sisteme giriş yapamaz
+      if (profile?.is_passive === true && !isSuperAdmin) {
+        await supabase.auth.signOut();
+        setErrorMsg('🚫 Bu hesap yönetici (aerayyoruk@gmail.com) tarafından pasife alınmıştır. Sisteme giriş yetkiniz durduruldu.');
+        setLoading(false);
+        return;
+      }
+
       // Ensure user has a unique 10-digit code
       let userCode = profile?.user_code;
       if (!userCode) {
@@ -55,6 +66,8 @@ export default function AuthModal({ onAuthSuccess }) {
       onAuthSuccess({
         id: data.user.id,
         email: data.user.email,
+        isAdmin: isSuperAdmin || profile?.is_admin === true,
+        isPassive: Boolean(profile?.is_passive),
         username: profile?.username || data.user.user_metadata?.username || email.split('@')[0],
         avatar: profile?.avatar || data.user.user_metadata?.avatar || '🎮',
         user_code: userCode

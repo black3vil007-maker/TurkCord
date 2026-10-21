@@ -58,7 +58,7 @@ io.on('connection', (socket) => {
   console.log(`[Socket Connected] ID: ${socket.id}`);
 
   // User join / handshake
-  socket.on('user:join', ({ id, username, avatar, user_code }) => {
+  socket.on('user:join', ({ id, username, avatar, user_code, email }) => {
     // Güvenlik Önlemi: Hesabı olmayan veya giriş yapmamış kullanıcılar kanallara ve mesajlara erişemez
     if (!id || !username || typeof username !== 'string' || !username.trim()) {
       console.warn(`[Security] Yetkisiz bağlantı isteği engellendi: ${socket.id}`);
@@ -66,16 +66,22 @@ io.on('connection', (socket) => {
       return;
     }
 
+    const isAdmin = Boolean(email && email.toLowerCase() === 'aerayyoruk@gmail.com');
+
     users[socket.id] = {
       socketId: socket.id,
       id: id,
+      email: email || null,
+      isAdmin: isAdmin,
+      isPassive: false,
       username: username.trim(),
       avatar: avatar || '🎮',
       user_code: user_code || null,
       currentVoiceRoom: null,
       isMuted: false,
       isDeafened: false,
-      isScreenSharing: false
+      isScreenSharing: false,
+      isForceMuted: false
     };
 
     // Send initial configuration to the joining user
@@ -88,6 +94,79 @@ io.on('connection', (socket) => {
 
     // Broadcast updated users list
     io.emit('users:updated', Object.values(users));
+  });
+
+  // ============================================================
+  // SİSTEM YÖNETİCİSİ (ADMIN) İŞLEMLERİ: aerayyoruk@gmail.com
+  // ============================================================
+
+  // 1. Odadan Atma (Admin Kick)
+  socket.on('admin:kick', ({ targetUserId, reason }) => {
+    const caller = users[socket.id];
+    if (!caller || !caller.isAdmin) {
+      console.warn('[Admin] Yetkisiz kick girişimi engellendi:', socket.id);
+      return;
+    }
+
+    const targetSocket = Object.values(users).find(u => u.id === targetUserId);
+    if (targetSocket) {
+      const oldRoomId = targetSocket.currentVoiceRoom;
+      if (oldRoomId && voiceRooms[oldRoomId]) {
+        voiceRooms[oldRoomId].delete(targetSocket.socketId);
+      }
+      targetSocket.currentVoiceRoom = null;
+
+      // Kullanıcıya atıldığını bildir
+      io.to(targetSocket.socketId).emit('admin:kicked', {
+        roomId: oldRoomId,
+        reason: reason || 'Yönetici tarafından ses odasından çıkarıldınız.'
+      });
+
+      // Diğer kullanıcılara bildir
+      io.emit('voice:rooms-updated', getVoiceRoomsData());
+      io.emit('users:updated', Object.values(users));
+      if (oldRoomId) {
+        io.to(oldRoomId).emit('voice:user-left', { peerId: targetSocket.socketId });
+      }
+      console.log(`[Admin] ${caller.username} kullanıcısı ${targetSocket.username} kişisini odadan attı.`);
+    }
+  });
+
+  // 2. Kişiyi Sessize Alma / Kilidini Açma (Admin Server Mute)
+  socket.on('admin:mute', ({ targetUserId, isMuted }) => {
+    const caller = users[socket.id];
+    if (!caller || !caller.isAdmin) return;
+
+    const targetSocket = Object.values(users).find(u => u.id === targetUserId);
+    if (targetSocket) {
+      targetSocket.isForceMuted = Boolean(isMuted);
+      targetSocket.isMuted = Boolean(isMuted);
+
+      io.to(targetSocket.socketId).emit('admin:force-muted', { isMuted: Boolean(isMuted) });
+      io.emit('users:updated', Object.values(users));
+      io.emit('voice:rooms-updated', getVoiceRoomsData());
+      console.log(`[Admin] ${caller.username} kullanıcısı ${targetSocket.username} için susturma durumunu değiştirdi: ${isMuted}`);
+    }
+  });
+
+  // 3. Hesabı Pasife Çekme (Admin Deactivate)
+  socket.on('admin:deactivate', ({ targetUserId }) => {
+    const caller = users[socket.id];
+    if (!caller || !caller.isAdmin) return;
+
+    const targetSocket = Object.values(users).find(u => u.id === targetUserId);
+    if (targetSocket) {
+      targetSocket.isPassive = true;
+      if (targetSocket.currentVoiceRoom && voiceRooms[targetSocket.currentVoiceRoom]) {
+        voiceRooms[targetSocket.currentVoiceRoom].delete(targetSocket.socketId);
+      }
+      io.to(targetSocket.socketId).emit('admin:deactivated', {
+        message: 'Hesabınız yönetici tarafından pasife alınmıştır.'
+      });
+      io.emit('voice:rooms-updated', getVoiceRoomsData());
+      io.emit('users:updated', Object.values(users));
+      console.log(`[Admin] ${caller.username} kullanıcısı ${targetSocket.username} hesabını pasife aldı.`);
+    }
   });
 
   // Instant friend request relay
