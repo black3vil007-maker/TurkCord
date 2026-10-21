@@ -40,6 +40,7 @@ import {
   Bell,
   BellOff,
   Smile,
+  Copy,
   Image as ImageIcon
 } from 'lucide-react';
 import AuthModal from './components/AuthModal';
@@ -137,7 +138,81 @@ export default function App() {
     currentUserRef.current = currentUser;
   }, [currentUser]);
 
-  // Unified incoming chat message handler with strict duplicate prevention
+  const loadCachedMessages = (channelId) => {
+    try {
+      const raw = localStorage.getItem(`turkcord_chat_log_${channelId}`);
+      if (raw) return JSON.parse(raw);
+    } catch (e) {}
+    return [];
+  };
+
+  const saveCachedMessages = (channelId, msgs) => {
+    try {
+      localStorage.setItem(`turkcord_chat_log_${channelId}`, JSON.stringify((msgs || []).slice(-300)));
+    } catch (e) {}
+  };
+
+  // Persistent Chat Log: Load from LocalStorage instantly & sync with Supabase channel_messages
+  useEffect(() => {
+    if (!activeTextChannel) return;
+
+    // 1. Instant local cache load
+    const cached = loadCachedMessages(activeTextChannel);
+    if (cached && cached.length > 0) {
+      setMessages(prev => ({
+        ...prev,
+        [activeTextChannel]: cached
+      }));
+    }
+
+    // 2. Fetch persistent log from Supabase database
+    const fetchCloudMessages = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('channel_messages')
+          .select('*')
+          .eq('channel_id', activeTextChannel)
+          .order('created_at', { ascending: true })
+          .limit(200);
+
+        if (!error && Array.isArray(data)) {
+          const formatted = data.map(row => ({
+            id: row.id,
+            channelId: row.channel_id,
+            sender: {
+              id: row.sender_id,
+              username: row.sender_username || 'Oyuncu',
+              avatar: row.sender_avatar || '🎮'
+            },
+            text: row.text,
+            image: row.image,
+            timestamp: row.created_at
+          }));
+
+          setMessages(prev => {
+            const currentMsgs = prev[activeTextChannel] || [];
+            const map = new Map();
+            currentMsgs.forEach(m => map.set(m.id, m));
+            formatted.forEach(m => map.set(m.id, m));
+            const merged = Array.from(map.values()).sort(
+              (a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime()
+            );
+            saveCachedMessages(activeTextChannel, merged);
+            return {
+              ...prev,
+              [activeTextChannel]: merged
+            };
+          });
+        }
+      } catch (err) {
+        console.warn('[Chat Log] Cloud fetch notice:', err);
+      }
+    };
+
+    fetchCloudMessages();
+  }, [activeTextChannel]);
+
+  // Unified incoming chat message handler with strict duplicate prevention & persistent log saving
   const handleIncomingChatMessage = (newMsg) => {
     if (!newMsg || !newMsg.channelId) return;
 
@@ -149,6 +224,7 @@ export default function App() {
       if (existingIdx !== -1) {
         const next = [...channelMsgs];
         next[existingIdx] = newMsg;
+        saveCachedMessages(newMsg.channelId, next);
         return { ...prev, [newMsg.channelId]: next };
       }
 
@@ -164,9 +240,11 @@ export default function App() {
         return prev;
       }
 
+      const updated = [...channelMsgs, newMsg];
+      saveCachedMessages(newMsg.channelId, updated);
       return {
         ...prev,
-        [newMsg.channelId]: [...channelMsgs, newMsg]
+        [newMsg.channelId]: updated
       };
     });
 
@@ -1482,8 +1560,24 @@ export default function App() {
       timestamp: new Date().toISOString()
     };
 
-    // Optimistically add to UI with deduplication guard
+    // Optimistically add to UI with deduplication guard & save to persistent cache
     handleIncomingChatMessage(newMsg);
+
+    // Save to Supabase channel_messages database table
+    try {
+      supabase.from('channel_messages').insert({
+        id: msgId,
+        channel_id: activeTextChannel,
+        sender_id: currentUser?.id || null,
+        sender_username: currentUser?.username || 'Oyuncu',
+        sender_avatar: currentUser?.avatar || '🎮',
+        text: trimmedText,
+        image: image || null,
+        created_at: newMsg.timestamp
+      }).then(({ error }) => {
+        if (error) console.warn('[Chat Log] Cloud message insert notice:', error.message);
+      });
+    } catch (e) {}
 
     // Transmit to network (Single Source of Truth)
     if (socket && socket.connected) {
@@ -1504,6 +1598,16 @@ export default function App() {
       ...prev,
       [channelId]: []
     }));
+
+    // Clear local persistent cache
+    try {
+      localStorage.removeItem(`turkcord_chat_log_${channelId}`);
+    } catch (e) {}
+
+    // Delete from Supabase
+    try {
+      supabase.from('channel_messages').delete().eq('channel_id', channelId).then(() => {});
+    } catch (e) {}
 
     realtimeSignaling.sendChatClear(channelId);
     if (socket && socket.connected) {
@@ -2524,19 +2628,20 @@ export default function App() {
             </div>
           )}
 
-          {/* Profil Bilgisi */}
-          <div className="flex items-center justify-between">
+          {/* Profil Bilgisi & Eylemler */}
+          <div className="flex items-center justify-between gap-2">
             <div 
               onClick={() => setShowSettings(true)}
-              className="flex items-center space-x-2.5 cursor-pointer hover:opacity-80 transition truncate max-w-[130px]"
+              className="flex items-center space-x-2.5 cursor-pointer hover:bg-[#21262d]/70 p-1.5 -ml-1 rounded-xl transition flex-1 min-w-0 group"
+              title="Profil Ayarlarını Aç"
             >
-              <div className="relative flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center">
-                <UserAvatar avatar={currentUser?.avatar} className="w-8 h-8 rounded-full border border-white/10" textClassName="text-2xl" />
+              <div className="relative flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center shadow">
+                <UserAvatar avatar={currentUser?.avatar} className="w-9 h-9 rounded-full border border-white/10" textClassName="text-2xl" />
                 <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-400 border-2 border-[#161b22] shadow-[0_0_8px_#10b981]" />
               </div>
-              <div className="truncate">
-                <div className="text-sm font-bold text-white truncate leading-tight flex items-center space-x-1">
-                  <span className="truncate">{currentUser?.username || 'Misafir'}</span>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-black text-white truncate leading-tight flex items-center space-x-1.5">
+                  <span className="truncate group-hover:text-indigo-300 transition">{currentUser?.username || 'Misafir'}</span>
                   {isAdmin && (
                     <button
                       type="button"
@@ -2544,7 +2649,7 @@ export default function App() {
                         e.stopPropagation();
                         setShowAdminPanel(true);
                       }}
-                      className="px-1.5 py-0.5 rounded-full bg-amber-500 hover:bg-amber-400 text-black text-[9px] font-black flex-shrink-0 flex items-center space-x-0.5 shadow transition"
+                      className="px-1.5 py-0.5 rounded-md bg-amber-500 hover:bg-amber-400 text-black text-[9px] font-black flex-shrink-0 flex items-center space-x-0.5 shadow transition"
                       title="Yönetim Panelini Aç"
                     >
                       <ShieldAlert className="w-2.5 h-2.5" />
@@ -2552,16 +2657,34 @@ export default function App() {
                     </button>
                   )}
                 </div>
-                <div className="text-[10px] font-mono text-indigo-400 truncate">
-                  ID: {currentUser?.user_code || '------'}
+                <div 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (currentUser?.user_code) {
+                      navigator.clipboard.writeText(currentUser.user_code);
+                      setRoomEventToast({
+                        type: 'join',
+                        text: `ID Kopyalandı: #${currentUser.user_code} 📋`
+                      });
+                      setTimeout(() => setRoomEventToast(null), 2500);
+                    }
+                  }}
+                  className="inline-flex items-center space-x-1 mt-0.5 text-xs font-mono font-bold text-emerald-400 hover:text-emerald-300 transition cursor-pointer select-all"
+                  title="Tıklayarak 10 Haneli ID'ni Kopyala"
+                >
+                  <span className="text-[10px] text-[#7d8590] font-sans font-semibold">ID:</span>
+                  <span className="tracking-wider bg-[#0d1117] px-1.5 py-0.2 rounded border border-[#30363d]/80 text-[11px] text-emerald-400">
+                    #{currentUser?.user_code || '------'}
+                  </span>
+                  <Copy className="w-2.5 h-2.5 text-[#7d8590] group-hover:text-emerald-400 ml-0.5 transition" />
                 </div>
               </div>
             </div>
 
-            <div className="flex items-center space-x-1">
+            <div className="flex items-center space-x-0.5 flex-shrink-0">
               <button
                 onClick={handleToggleMute}
-                className={`p-2 rounded-xl transition ${
+                className={`p-1.5 rounded-lg transition ${
                   currentUser?.isMuted
                     ? 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30'
                     : 'text-[#7d8590] hover:text-white hover:bg-[#21262d]'
@@ -2573,7 +2696,7 @@ export default function App() {
 
               <button
                 onClick={handleToggleDeafen}
-                className={`p-2 rounded-xl transition ${
+                className={`p-1.5 rounded-lg transition ${
                   currentUser?.isDeafened
                     ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30'
                     : 'text-[#7d8590] hover:text-white hover:bg-[#21262d]'
@@ -2585,7 +2708,7 @@ export default function App() {
 
               <button
                 onClick={handleSignOut}
-                className="p-2 rounded-xl text-[#7d8590] hover:text-rose-400 hover:bg-[#21262d] transition"
+                className="p-1.5 rounded-lg text-[#7d8590] hover:text-rose-400 hover:bg-[#21262d] transition"
                 title="Çıkış Yap"
               >
                 <LogOut className="w-4 h-4" />
