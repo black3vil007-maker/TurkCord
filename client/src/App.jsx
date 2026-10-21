@@ -48,6 +48,7 @@ export default function App() {
   const [peers, setPeers] = useState({});
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [screenStream, setScreenStream] = useState(null);
+  const [screenShareNotification, setScreenShareNotification] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [livePing, setLivePing] = useState(12);
 
@@ -337,7 +338,24 @@ export default function App() {
       }
     };
 
-    realtimeSignaling.onScreenShareToggle = () => {
+    realtimeSignaling.onScreenShareToggle = (userId, isSharing) => {
+      const broadcasterUser = allUsers.find(u => u.id === userId) || { username: 'Arkadaşın' };
+      if (isSharing) {
+        setScreenShareNotification({
+          type: 'started',
+          userName: broadcasterUser.username,
+          message: `${broadcasterUser.username} ekran yayınını başlattı`
+        });
+        setTimeout(() => setScreenShareNotification(null), 4000);
+      } else {
+        webrtc.handleRemoteScreenShareEnded(userId);
+        setScreenShareNotification({
+          type: 'stopped',
+          userName: broadcasterUser.username,
+          message: `${broadcasterUser.username} ekran yayınını durdurdu.`
+        });
+        setTimeout(() => setScreenShareNotification(null), 6000);
+      }
       setPeers({ ...webrtc.peers });
     };
 
@@ -574,10 +592,17 @@ export default function App() {
 
   const handleSelectViewerResolution = (quality) => {
     setViewerResolution(quality);
-    // Request sender to adjust bitrate/downscale for us
-    for (const [peerId, peer] of Object.entries(peers)) {
-      if (peer.remoteStream?.getVideoTracks().length > 0) {
-        realtimeSignaling.sendQualityRequest(peerId, quality);
+    if (isScreenSharing) {
+      // Outgoing: apply to all peer connections
+      for (const peerId of Object.keys(peers)) {
+        webrtc.setVideoQualityForPeer(peerId, quality);
+      }
+    } else {
+      // Incoming: request broadcaster to stream at this bitrate
+      for (const [peerId, peer] of Object.entries(peers)) {
+        if (peer.remoteStream && peer.remoteStream.getVideoTracks().length > 0) {
+          realtimeSignaling.sendQualityRequest(peerId, quality);
+        }
       }
     }
   };
@@ -1342,6 +1367,37 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Ekran Paylaşımı Başladı / Durduruldu Bildirim Rozeti */}
+              {screenShareNotification && (
+                <div className={`my-3 p-3.5 rounded-2xl flex items-center justify-between border animate-in fade-in slide-in-from-top-2 duration-200 shadow-xl ${
+                  screenShareNotification.type === 'stopped'
+                    ? 'bg-amber-500/10 border-amber-500/30 text-amber-200'
+                    : 'bg-indigo-500/10 border-indigo-500/30 text-indigo-200'
+                }`}>
+                  <div className="flex items-center space-x-3">
+                    <div className={`w-8 h-8 rounded-xl flex items-center justify-center font-bold ${
+                      screenShareNotification.type === 'stopped' ? 'bg-amber-500/20 text-amber-400' : 'bg-indigo-500/20 text-indigo-400'
+                    }`}>
+                      <Tv className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-black text-white">
+                        {screenShareNotification.type === 'stopped' ? '📺 Ekran Yayını Durduruldu' : '📺 Canlı Yayın Başladı'}
+                      </div>
+                      <div className="text-[11px] opacity-80">
+                        {screenShareNotification.message}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setScreenShareNotification(null)}
+                    className="p-1 rounded-lg hover:bg-white/10 text-white/60 hover:text-white transition"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+
               {/* Ekran Paylaşımı Varsa (Yayıncı veya İzleyici) */}
               {(() => {
                 if (screenStream) {
@@ -1357,7 +1413,7 @@ export default function App() {
                 }
 
                 const peerWithVideo = Object.entries(peers).find(([_, p]) =>
-                  p.remoteStream && p.remoteStream.getVideoTracks().length > 0
+                  p.remoteStream && p.remoteStream.getVideoTracks().some(t => t.readyState === 'live' && !t.muted)
                 );
 
                 if (peerWithVideo) {
@@ -1809,14 +1865,42 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
   const videoRef = React.useRef(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showQualityMenu, setShowQualityMenu] = useState(false);
+  const [isEnded, setIsEnded] = useState(false);
 
   useEffect(() => {
-    if (videoRef.current && stream) {
+    if (!stream) {
+      setIsEnded(true);
+      return;
+    }
+    const tracks = stream.getVideoTracks();
+    if (tracks.length === 0) {
+      setIsEnded(true);
+      return;
+    }
+
+    setIsEnded(false);
+    const videoTrack = tracks[0];
+
+    if (videoRef.current) {
       videoRef.current.srcObject = stream;
       videoRef.current.play().catch(e => {
         console.warn('[Video] Play interrupted / user gesture needed:', e);
       });
     }
+
+    const handleEnded = () => setIsEnded(true);
+    videoTrack.addEventListener('ended', handleEnded);
+    videoTrack.addEventListener('mute', () => {
+      setTimeout(() => {
+        if (videoTrack.readyState === 'ended' || videoTrack.muted) {
+          setIsEnded(true);
+        }
+      }, 400);
+    });
+
+    return () => {
+      videoTrack.removeEventListener('ended', handleEnded);
+    };
   }, [stream]);
 
   const toggleFullscreen = () => {
@@ -1837,11 +1921,25 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
   }, []);
 
   const resolutions = [
-    { id: 'auto', label: '⚡ Otomatik', desc: 'İnternet Hızına Göre' },
-    { id: '1080p', label: '1080p', desc: 'FHD 60 FPS' },
-    { id: '720p', label: '720p', desc: 'HD 60 FPS' },
-    { id: '480p', label: '480p', desc: 'SD Tasarruf' },
+    { id: 'auto', label: '⚡ Otomatik', desc: 'İnternet Hızına Göre (Max 8 Mbps)' },
+    { id: '1080p', label: '1080p', desc: 'FHD 60 FPS (8 Mbps Kristal Netlik)' },
+    { id: '720p', label: '720p', desc: 'HD 60 FPS (4 Mbps)' },
+    { id: '480p', label: '480p', desc: 'SD Tasarruf (1.2 Mbps)' },
   ];
+
+  if (isEnded) {
+    return (
+      <div className="my-4 rounded-3xl bg-[#161b22] border border-[#30363d] p-8 text-center max-w-lg mx-auto shadow-2xl animate-in fade-in duration-200">
+        <div className="w-12 h-12 rounded-2xl bg-amber-500/10 text-amber-400 flex items-center justify-center mx-auto mb-3">
+          <Tv className="w-6 h-6" />
+        </div>
+        <h4 className="text-sm font-black text-white">Yayın Durduruldu</h4>
+        <p className="text-xs text-[#7d8590] mt-1">
+          {broadcasterName ? `${broadcasterName} ekran paylaşımını sonlandırdı.` : 'Ekran paylaşımı kapatıldı.'}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div

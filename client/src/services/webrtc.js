@@ -27,6 +27,60 @@ class WebRTCManager {
     this.onPeersChange = null;
     this.onSpeakingChange = null;
     this.onSignal = null;
+
+    // Audio & Noise Reduction Settings
+    this.audioSettings = this.loadAudioSettings();
+    this.voiceGateHangTimeout = null;
+    this.isGateOpen = false;
+  }
+
+  loadAudioSettings() {
+    try {
+      const saved = localStorage.getItem('turkcord_audio_settings');
+      if (saved) {
+        return {
+          noiseSuppression: true,
+          echoCancellation: true,
+          autoGainControl: false,
+          voiceGateEnabled: true,
+          voiceGateThreshold: 22,
+          autoSensitivity: false,
+          ...JSON.parse(saved)
+        };
+      }
+    } catch (e) {}
+    return {
+      noiseSuppression: true,
+      echoCancellation: true,
+      autoGainControl: false,
+      voiceGateEnabled: true,
+      voiceGateThreshold: 22,
+      autoSensitivity: false
+    };
+  }
+
+  saveAudioSettings(settings) {
+    this.audioSettings = { ...this.audioSettings, ...settings };
+    try {
+      localStorage.setItem('turkcord_audio_settings', JSON.stringify(this.audioSettings));
+    } catch (e) {}
+    this.applyAudioSettingsLive();
+  }
+
+  async applyAudioSettingsLive() {
+    if (!this.localStream) return;
+    const audioTrack = this.localStream.getAudioTracks()[0];
+    if (audioTrack) {
+      try {
+        await audioTrack.applyConstraints({
+          echoCancellation: { ideal: Boolean(this.audioSettings.echoCancellation) },
+          noiseSuppression: { ideal: Boolean(this.audioSettings.noiseSuppression) },
+          autoGainControl: { ideal: Boolean(this.audioSettings.autoGainControl) }
+        });
+      } catch (e) {
+        console.warn('[WebRTC] applyConstraints error:', e);
+      }
+    }
   }
 
   // Unified signaling dispatcher (both Supabase Realtime Broadcast & Socket.io)
@@ -52,17 +106,17 @@ class WebRTCManager {
     }
   }
 
-  // Initialize local microphone with eSports Gaming Low-Latency constraints
+  // Initialize local microphone with noise filtering & eSports Gaming Low-Latency constraints
   async initLocalAudio() {
     if (this.localStream) return this.localStream;
 
     try {
       this.localStream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: { ideal: true },
-          noiseSuppression: { ideal: false }, // Avoids 15-30ms heavy software DSP lookahead delay
-          autoGainControl: { ideal: false },  // Avoids dynamic compressor buffer delay
-          channelCount: { ideal: 1 },         // Mono microphone saves 50% CPU and network payload
+          echoCancellation: { ideal: Boolean(this.audioSettings.echoCancellation) },
+          noiseSuppression: { ideal: Boolean(this.audioSettings.noiseSuppression) }, // Filters background keyboard & fan noise
+          autoGainControl: { ideal: Boolean(this.audioSettings.autoGainControl) },
+          channelCount: { ideal: 1 },         // Mono saves network bandwidth and CPU
           sampleRate: { ideal: 48000 },       // Native Opus 48kHz avoids resampler delay
           sampleSize: { ideal: 16 },
           latency: { ideal: 0.005 }           // Lowest WASAPI / CoreAudio hardware buffer (~5ms)
@@ -93,22 +147,34 @@ class WebRTCManager {
     }
   }
 
-  // Optimize SDP specifically for Gaming: 10ms Opus packets, FEC, 64kbps CBR, no DTX
+  // Optimize SDP specifically for Gaming: 10ms Opus packets, FEC, 64kbps CBR + 8Mbps Crisp Screen Share
   optimizeSdpForGaming(sdp) {
     if (!sdp) return sdp;
 
+    // 1. Opus Audio Optimization
     const opusMatch = sdp.match(/a=rtpmap:(\d+)\s+opus\/48000/i);
-    if (!opusMatch) return sdp;
+    if (opusMatch) {
+      const opusPayload = opusMatch[1];
+      const gamingParams = 'minptime=10;ptime=10;maxaveragebitrate=64000;stereo=0;sprop-stereo=0;cbr=1;useinbandfec=1;usedtx=0';
 
-    const opusPayload = opusMatch[1];
-    const gamingParams = 'minptime=10;ptime=10;maxaveragebitrate=64000;stereo=0;sprop-stereo=0;cbr=1;useinbandfec=1;usedtx=0';
-
-    const fmtpRegex = new RegExp(`a=fmtp:${opusPayload}\\s+(.*)`, 'i');
-    if (fmtpRegex.test(sdp)) {
-      return sdp.replace(fmtpRegex, `a=fmtp:${opusPayload} $1;${gamingParams}`);
-    } else {
-      return sdp.replace(opusMatch[0], `${opusMatch[0]}\r\na=fmtp:${opusPayload} ${gamingParams}`);
+      const fmtpRegex = new RegExp(`a=fmtp:${opusPayload}\\s+(.*)`, 'i');
+      if (fmtpRegex.test(sdp)) {
+        sdp = sdp.replace(fmtpRegex, `a=fmtp:${opusPayload} $1;${gamingParams}`);
+      } else {
+        sdp = sdp.replace(opusMatch[0], `${opusMatch[0]}\r\na=fmtp:${opusPayload} ${gamingParams}`);
+      }
     }
+
+    // 2. Video Bandwidth Injection (Crucial: boosts default WebRTC 300kbps limit to 8000kbps / 8 Mbps for crisp 1080p)
+    if (sdp.includes('m=video')) {
+      if (!sdp.includes('b=AS:')) {
+        sdp = sdp.replace(/(m=video [^\r\n]+(?:\r\n|\n))/, `$1b=AS:8000\r\nb=TIAS:8000000\r\n`);
+      } else {
+        sdp = sdp.replace(/b=AS:\d+/g, 'b=AS:8000').replace(/b=TIAS:\d+/g, 'b=TIAS:8000000');
+      }
+    }
+
+    return sdp;
   }
 
   // Optimize RTCPeerConnection for real-time playout without artificial jitter buffering
@@ -146,22 +212,31 @@ class WebRTCManager {
     }
   }
 
-  // Voice Activity Detection (Detect when user is speaking to light up green indicator)
+  // Voice Activity Detection with Instant Voice Gate (Eliminates keyboard & background noise)
   setupVAD(stream) {
     try {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       if (!AudioCtx) return;
       
+      if (this.audioContext && this.audioContext.state !== 'closed') {
+        try { this.audioContext.close(); } catch (e) {}
+      }
+
       this.audioContext = new AudioCtx();
       const source = this.audioContext.createMediaStreamSource(stream);
       this.analyser = this.audioContext.createAnalyser();
       this.analyser.fftSize = 512;
-      this.analyser.smoothingTimeConstant = 0.4;
+      this.analyser.smoothingTimeConstant = 0.3;
       source.connect(this.analyser);
 
       const bufferLength = this.analyser.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
       let wasSpeaking = false;
+
+      if (this.vadInterval) {
+        clearInterval(this.vadInterval);
+        this.vadInterval = null;
+      }
 
       this.vadInterval = setInterval(() => {
         if (this.isMuted || !this.localStream) {
@@ -178,15 +253,49 @@ class WebRTCManager {
         for (let i = 0; i < bufferLength; i++) {
           sum += dataArray[i];
         }
-        const average = sum / bufferLength;
-        const isSpeaking = average > 18; // Sensible threshold for voice
+        const currentLevel = Math.min(100, Math.round((sum / bufferLength) * 2));
+        
+        // Voice Gate Threshold: Mechanical keyboard & ambient noise typically sits below 20
+        const threshold = this.audioSettings.voiceGateEnabled 
+          ? (this.audioSettings.voiceGateThreshold || 22)
+          : 6;
+
+        const isSpeaking = currentLevel >= threshold;
+        const audioTrack = this.localStream.getAudioTracks()[0];
+
+        // Hardware-level Voice Gate: completely cuts off keyboard clatter when user is silent
+        if (this.audioSettings.voiceGateEnabled && audioTrack) {
+          if (isSpeaking) {
+            if (this.voiceGateHangTimeout) {
+              clearTimeout(this.voiceGateHangTimeout);
+              this.voiceGateHangTimeout = null;
+            }
+            if (!audioTrack.enabled && !this.isMuted) {
+              audioTrack.enabled = true; // Open voice gate immediately
+            }
+            this.isGateOpen = true;
+          } else if (this.isGateOpen) {
+            // Keep gate open for 250ms hangtime so natural syllable pauses aren't cut
+            if (!this.voiceGateHangTimeout) {
+              this.voiceGateHangTimeout = setTimeout(() => {
+                if (audioTrack && !this.isMuted) {
+                  audioTrack.enabled = false; // Block background typing clicks
+                }
+                this.isGateOpen = false;
+                this.voiceGateHangTimeout = null;
+              }, 250);
+            }
+          }
+        } else if (audioTrack && !audioTrack.enabled && !this.isMuted) {
+          audioTrack.enabled = true;
+        }
 
         if (isSpeaking !== wasSpeaking) {
           wasSpeaking = isSpeaking;
           if (this.onSpeakingChange) this.onSpeakingChange('self', isSpeaking);
           this.sendSignal('voice:speaking', { isSpeaking });
         }
-      }, 100);
+      }, 50);
     } catch (e) {
       console.warn('[WebRTC] VAD setup failed:', e);
     }
@@ -239,6 +348,29 @@ class WebRTCManager {
     pc.ontrack = (event) => {
       if (event.track) {
         remoteStream.addTrack(event.track);
+
+        // Track lifecycle: ensure stopped screen shares are immediately purged
+        if (event.track.kind === 'video') {
+          const purgeVideoTrack = () => {
+            try { remoteStream.removeTrack(event.track); } catch (e) {}
+            if (this.onPeersChange) {
+              this.peers[peerId] = {
+                ...this.peers[peerId],
+                remoteStream: new MediaStream(remoteStream.getTracks())
+              };
+              this.onPeersChange({ ...this.peers });
+            }
+          };
+
+          event.track.onended = purgeVideoTrack;
+          event.track.onmute = () => {
+            setTimeout(() => {
+              if (event.track.readyState === 'ended' || event.track.muted) {
+                purgeVideoTrack();
+              }
+            }, 300);
+          };
+        }
       } else if (event.streams && event.streams[0]) {
         event.streams[0].getTracks().forEach(track => {
           remoteStream.addTrack(track);
@@ -356,14 +488,14 @@ class WebRTCManager {
       cursor: 'always'
     };
 
-    if (targetQuality === '1080p') {
+    if (targetQuality === '1080p' || targetQuality === 'auto') {
       videoConstraints.width = { ideal: 1920, max: 1920 };
       videoConstraints.height = { ideal: 1080, max: 1080 };
       videoConstraints.frameRate = { ideal: 60, max: 60 };
     } else if (targetQuality === '720p') {
       videoConstraints.width = { ideal: 1280, max: 1280 };
       videoConstraints.height = { ideal: 720, max: 720 };
-      videoConstraints.frameRate = { ideal: 30, max: 60 };
+      videoConstraints.frameRate = { ideal: 60, max: 60 };
     } else if (targetQuality === '480p') {
       videoConstraints.width = { ideal: 854, max: 854 };
       videoConstraints.height = { ideal: 480, max: 480 };
@@ -385,7 +517,8 @@ class WebRTCManager {
 
       const videoTrack = this.screenStream.getVideoTracks()[0];
       if (videoTrack && 'contentHint' in videoTrack) {
-        videoTrack.contentHint = 'motion'; // Optimize for high-framerate gaming
+        // 'detail' instructs encoder to preserve sharp text, edges and resolutions without aggressive blurring
+        videoTrack.contentHint = 'detail';
       }
 
       // Add track to all connected peers and renegotiate
@@ -420,7 +553,7 @@ class WebRTCManager {
       this.screenStream.getTracks().forEach(t => t.stop());
       this.screenStream = null;
 
-      // Remove video track from peers
+      // Remove video track from peers and renegotiate
       for (const [peerId, peer] of Object.entries(this.peers)) {
         const sender = peer.connection.getSenders().find(s => s.track && s.track.kind === 'video');
         if (sender) {
@@ -436,6 +569,35 @@ class WebRTCManager {
         socket.emit('voice:screenshare-toggle', { isSharing: false });
       }
       if (this.onPeersChange) this.onPeersChange({ ...this.peers });
+    }
+  }
+
+  // Purge remote video tracks when a broadcaster stops sharing (prevents frozen screens)
+  handleRemoteScreenShareEnded(peerId) {
+    if (peerId && this.peers[peerId]) {
+      const peer = this.peers[peerId];
+      if (peer.remoteStream) {
+        peer.remoteStream.getVideoTracks().forEach(track => {
+          track.stop();
+          try { peer.remoteStream.removeTrack(track); } catch (e) {}
+        });
+        peer.remoteStream = new MediaStream(peer.remoteStream.getTracks());
+      }
+    } else {
+      // Purge all remote video tracks
+      Object.values(this.peers).forEach(peer => {
+        if (peer.remoteStream) {
+          peer.remoteStream.getVideoTracks().forEach(track => {
+            track.stop();
+            try { peer.remoteStream.removeTrack(track); } catch (e) {}
+          });
+          peer.remoteStream = new MediaStream(peer.remoteStream.getTracks());
+        }
+      });
+    }
+
+    if (this.onPeersChange) {
+      this.onPeersChange({ ...this.peers });
     }
   }
 
@@ -458,8 +620,8 @@ class WebRTCManager {
     }
   }
 
-  // Adjust quality/resolution dynamically per viewer (1080p, 720p, 480p, auto)
-  setVideoQualityForPeer(peerId, quality) {
+  // Adjust quality/resolution dynamically per viewer (1080p: 8 Mbps, 720p: 4 Mbps, 480p: 1.2 Mbps)
+  setVideoQualityForPeer(peerId, quality = '1080p') {
     const peer = this.peers[peerId];
     if (!peer || !peer.connection) return;
 
@@ -472,28 +634,31 @@ class WebRTCManager {
         params.encodings = [{}];
       }
 
+      // Maintain full resolution without dropping to pixelated downscales
+      params.degradationPreference = 'maintain-resolution';
+
       if (quality === '1080p') {
         params.encodings[0].scaleResolutionDownBy = 1.0;
-        params.encodings[0].maxBitrate = 3500000; // 3.5 Mbps for 1080p
+        params.encodings[0].maxBitrate = 8000000; // 8.0 Mbps for razor-sharp 1080p FHD
         params.encodings[0].maxFramerate = 60;
       } else if (quality === '720p') {
-        params.encodings[0].scaleResolutionDownBy = 1.5;
-        params.encodings[0].maxBitrate = 1800000; // 1.8 Mbps for 720p
+        params.encodings[0].scaleResolutionDownBy = 1.0;
+        params.encodings[0].maxBitrate = 4000000; // 4.0 Mbps for sharp 720p HD
         params.encodings[0].maxFramerate = 60;
       } else if (quality === '480p') {
-        params.encodings[0].scaleResolutionDownBy = 2.25;
-        params.encodings[0].maxBitrate = 700000;  // 700 Kbps for 480p
+        params.encodings[0].scaleResolutionDownBy = 2.0;
+        params.encodings[0].maxBitrate = 1200000; // 1.2 Mbps for SD
         params.encodings[0].maxFramerate = 30;
       } else {
-        // Auto / Dynamic Adaptive
+        // Auto / Dynamic Adaptive (up to 8 Mbps)
         delete params.encodings[0].scaleResolutionDownBy;
-        params.encodings[0].maxBitrate = 3500000;
+        params.encodings[0].maxBitrate = 8000000;
         params.encodings[0].maxFramerate = 60;
       }
 
       sender.setParameters(params).then(() => {
-        console.log(`[WebRTC] Set video quality ${quality} for viewer ${peerId}`);
-      }).catch(err => console.warn('setParameters error:', err));
+        console.log(`[WebRTC] Set video quality ${quality} (${params.encodings[0].maxBitrate / 1000}kbps) for peer ${peerId}`);
+      }).catch(err => console.warn('setParameters warning (normal during negotiation):', err));
     } catch (e) {
       console.warn('Video quality adjust error:', e);
     }
@@ -607,14 +772,14 @@ class WebRTCManager {
     return 14; // Typical local / fast LAN default
   }
 
-  // Self Mic Loopback Test (Hear your own voice + meter)
+  // Self Mic Loopback Test (Hear your own voice + meter with active noise suppression)
   async startMicTest(onLevel) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: true
+          echoCancellation: Boolean(this.audioSettings.echoCancellation),
+          noiseSuppression: Boolean(this.audioSettings.noiseSuppression),
+          autoGainControl: Boolean(this.audioSettings.autoGainControl)
         }
       });
 
