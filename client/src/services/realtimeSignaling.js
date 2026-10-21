@@ -12,6 +12,8 @@ class RealtimeSignaling {
     this.onChatMessage = null; // (message) => void
     this.onRoomUpdated = null; // (room) => void
     this.onRoomDeleted = null; // (roomId) => void
+    this.onScreenShareToggle = null; // (userId, isSharing) => void
+    this.onQualityRequest = null; // (fromId, quality) => void
     this.currentVoiceRoom = null;
     this.isMuted = false;
     this.isDeafened = false;
@@ -77,6 +79,18 @@ class RealtimeSignaling {
     this.channel.on('broadcast', { event: 'room:deleted' }, ({ payload }) => {
       if (payload && this.onRoomDeleted) {
         this.onRoomDeleted(payload.id);
+      }
+    });
+
+    this.channel.on('broadcast', { event: 'screenshare:toggle' }, ({ payload }) => {
+      if (payload && this.onScreenShareToggle) {
+        this.onScreenShareToggle(payload.userId, payload.isSharing);
+      }
+    });
+
+    this.channel.on('broadcast', { event: 'screenshare:set-quality' }, ({ payload }) => {
+      if (payload && payload.to === this.currentUser?.id && this.onQualityRequest) {
+        this.onQualityRequest(payload.from, payload.quality);
       }
     });
 
@@ -202,6 +216,24 @@ class RealtimeSignaling {
       type: 'broadcast',
       event: 'room:deleted',
       payload: { id: roomId }
+    });
+  }
+
+  sendScreenShareToggle(isSharing) {
+    if (!this.channel || !this.currentUser) return;
+    this.channel.send({
+      type: 'broadcast',
+      event: 'screenshare:toggle',
+      payload: { userId: this.currentUser.id, isSharing }
+    });
+  }
+
+  sendQualityRequest(toUserId, quality) {
+    if (!this.channel || !this.currentUser) return;
+    this.channel.send({
+      type: 'broadcast',
+      event: 'screenshare:set-quality',
+      payload: { to: toUserId, from: this.currentUser.id, quality }
     });
   }
 

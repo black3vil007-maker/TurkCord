@@ -235,17 +235,33 @@ class WebRTCManager {
       });
     }
 
-    // Handle remote tracks
+    // Handle remote tracks (Audio & Screen Video)
     pc.ontrack = (event) => {
-      event.streams[0].getTracks().forEach(track => {
-        remoteStream.addTrack(track);
-      });
-      audioEl.srcObject = remoteStream;
-      audioEl.play().catch(e => {
-        console.warn('[WebRTC] Audio play waiting for user gesture:', e);
-      });
+      if (event.track) {
+        remoteStream.addTrack(event.track);
+      } else if (event.streams && event.streams[0]) {
+        event.streams[0].getTracks().forEach(track => {
+          remoteStream.addTrack(track);
+        });
+      }
+
+      // If audio track, attach to hidden audio element
+      if (event.track && event.track.kind === 'audio') {
+        audioEl.srcObject = remoteStream;
+        audioEl.play().catch(e => {
+          console.warn('[WebRTC] Audio play waiting for user gesture:', e);
+        });
+      }
+
       this.optimizePeer(pc);
-      if (this.onPeersChange) this.onPeersChange({ ...this.peers });
+
+      if (this.onPeersChange) {
+        this.peers[peerId] = {
+          ...this.peers[peerId],
+          remoteStream: new MediaStream(remoteStream.getTracks())
+        };
+        this.onPeersChange({ ...this.peers });
+      }
     };
 
     // Send ICE candidates to remote peer via unified signaling
@@ -334,36 +350,64 @@ class WebRTCManager {
     }
   }
 
-  // Screen sharing toggle
-  async startScreenShare() {
+  // Screen sharing toggle with resolution choice (1080p, 720p, 480p, auto)
+  async startScreenShare(targetQuality = '1080p') {
+    let videoConstraints = {
+      cursor: 'always'
+    };
+
+    if (targetQuality === '1080p') {
+      videoConstraints.width = { ideal: 1920, max: 1920 };
+      videoConstraints.height = { ideal: 1080, max: 1080 };
+      videoConstraints.frameRate = { ideal: 60, max: 60 };
+    } else if (targetQuality === '720p') {
+      videoConstraints.width = { ideal: 1280, max: 1280 };
+      videoConstraints.height = { ideal: 720, max: 720 };
+      videoConstraints.frameRate = { ideal: 30, max: 60 };
+    } else if (targetQuality === '480p') {
+      videoConstraints.width = { ideal: 854, max: 854 };
+      videoConstraints.height = { ideal: 480, max: 480 };
+      videoConstraints.frameRate = { ideal: 30, max: 30 };
+    } else {
+      videoConstraints.frameRate = { ideal: 60, max: 60 };
+    }
+
     try {
       this.screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          cursor: 'always',
-          frameRate: { ideal: 30, max: 60 }
-        },
-        audio: true
+        video: videoConstraints,
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          channelCount: 2
+        }
       });
 
       const videoTrack = this.screenStream.getVideoTracks()[0];
+      if (videoTrack && 'contentHint' in videoTrack) {
+        videoTrack.contentHint = 'motion'; // Optimize for high-framerate gaming
+      }
 
-      // Add track to all connected peers
+      // Add track to all connected peers and renegotiate
       for (const [peerId, peer] of Object.entries(this.peers)) {
         const sender = peer.connection.getSenders().find(s => s.track && s.track.kind === 'video');
         if (sender) {
-          sender.replaceTrack(videoTrack);
+          await sender.replaceTrack(videoTrack);
         } else {
           peer.connection.addTrack(videoTrack, this.screenStream);
-          // Renogotiate
-          this.renegotiate(peerId, peer.connection);
+          await this.renegotiate(peerId, peer.connection);
         }
+        this.setVideoQualityForPeer(peerId, targetQuality);
       }
 
       videoTrack.onended = () => {
         this.stopScreenShare();
       };
 
-      socket.emit('voice:screenshare-toggle', { isSharing: true });
+      realtimeSignaling.sendScreenShareToggle(true);
+      if (socket && socket.connected) {
+        socket.emit('voice:screenshare-toggle', { isSharing: true });
+      }
       return this.screenStream;
     } catch (err) {
       console.warn('[WebRTC] Screen share cancelled or failed:', err);
@@ -380,19 +424,27 @@ class WebRTCManager {
       for (const [peerId, peer] of Object.entries(this.peers)) {
         const sender = peer.connection.getSenders().find(s => s.track && s.track.kind === 'video');
         if (sender) {
-          peer.connection.removeTrack(sender);
-          this.renegotiate(peerId, peer.connection);
+          try {
+            peer.connection.removeTrack(sender);
+            this.renegotiate(peerId, peer.connection);
+          } catch (e) {}
         }
       }
 
-      socket.emit('voice:screenshare-toggle', { isSharing: false });
+      realtimeSignaling.sendScreenShareToggle(false);
+      if (socket && socket.connected) {
+        socket.emit('voice:screenshare-toggle', { isSharing: false });
+      }
       if (this.onPeersChange) this.onPeersChange({ ...this.peers });
     }
   }
 
   async renegotiate(peerId, pc) {
     try {
-      const offer = await pc.createOffer();
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true
+      });
       const optimizedSdp = this.optimizeSdpForGaming(offer.sdp);
       const optimizedOffer = new RTCSessionDescription({
         type: offer.type,
@@ -403,6 +455,47 @@ class WebRTCManager {
       this.sendSignal('webrtc:offer', { to: peerId, offer: optimizedOffer });
     } catch (e) {
       console.error('[WebRTC] Renegotiation error:', e);
+    }
+  }
+
+  // Adjust quality/resolution dynamically per viewer (1080p, 720p, 480p, auto)
+  setVideoQualityForPeer(peerId, quality) {
+    const peer = this.peers[peerId];
+    if (!peer || !peer.connection) return;
+
+    const sender = peer.connection.getSenders().find(s => s.track && s.track.kind === 'video');
+    if (!sender) return;
+
+    try {
+      const params = sender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+
+      if (quality === '1080p') {
+        params.encodings[0].scaleResolutionDownBy = 1.0;
+        params.encodings[0].maxBitrate = 3500000; // 3.5 Mbps for 1080p
+        params.encodings[0].maxFramerate = 60;
+      } else if (quality === '720p') {
+        params.encodings[0].scaleResolutionDownBy = 1.5;
+        params.encodings[0].maxBitrate = 1800000; // 1.8 Mbps for 720p
+        params.encodings[0].maxFramerate = 60;
+      } else if (quality === '480p') {
+        params.encodings[0].scaleResolutionDownBy = 2.25;
+        params.encodings[0].maxBitrate = 700000;  // 700 Kbps for 480p
+        params.encodings[0].maxFramerate = 30;
+      } else {
+        // Auto / Dynamic Adaptive
+        delete params.encodings[0].scaleResolutionDownBy;
+        params.encodings[0].maxBitrate = 3500000;
+        params.encodings[0].maxFramerate = 60;
+      }
+
+      sender.setParameters(params).then(() => {
+        console.log(`[WebRTC] Set video quality ${quality} for viewer ${peerId}`);
+      }).catch(err => console.warn('setParameters error:', err));
+    } catch (e) {
+      console.warn('Video quality adjust error:', e);
     }
   }
 

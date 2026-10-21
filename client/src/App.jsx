@@ -24,7 +24,10 @@ import {
   Pencil,
   Trash2,
   KeyRound,
-  Zap
+  Zap,
+  Maximize2,
+  Minimize2,
+  Tv
 } from 'lucide-react';
 import AuthModal from './components/AuthModal';
 import FriendsPanel from './components/FriendsPanel';
@@ -61,6 +64,7 @@ export default function App() {
   const [passwordInput, setPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [unlockedRooms, setUnlockedRooms] = useState({});
+  const [viewerResolution, setViewerResolution] = useState('auto'); // 'auto', '1080p', '720p', '480p'
 
   // Incoming Room Invite & Friend Requests
   const [incomingInvite, setIncomingInvite] = useState(null);
@@ -333,6 +337,14 @@ export default function App() {
       }
     };
 
+    realtimeSignaling.onScreenShareToggle = () => {
+      setPeers({ ...webrtc.peers });
+    };
+
+    realtimeSignaling.onQualityRequest = (viewerId, requestedQuality) => {
+      webrtc.setVideoQualityForPeer(viewerId, requestedQuality);
+    };
+
     return () => {
       realtimeSignaling.destroy();
     };
@@ -549,11 +561,23 @@ export default function App() {
       webrtc.stopScreenShare();
       setIsScreenSharing(false);
       setScreenStream(null);
+      setPeers({ ...webrtc.peers });
     } else {
-      const stream = await webrtc.startScreenShare();
+      const stream = await webrtc.startScreenShare(viewerResolution);
       if (stream) {
         setIsScreenSharing(true);
         setScreenStream(stream);
+        setPeers({ ...webrtc.peers });
+      }
+    }
+  };
+
+  const handleSelectViewerResolution = (quality) => {
+    setViewerResolution(quality);
+    // Request sender to adjust bitrate/downscale for us
+    for (const [peerId, peer] of Object.entries(peers)) {
+      if (peer.remoteStream?.getVideoTracks().length > 0) {
+        realtimeSignaling.sendQualityRequest(peerId, quality);
       }
     }
   };
@@ -1318,21 +1342,41 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Ekran Paylaşımı Varsa */}
-              {(screenStream || Object.values(peers).some(p => p.remoteStream?.getVideoTracks().length > 0)) && (
-                <div className="my-4 relative rounded-2xl overflow-hidden bg-black aspect-video max-h-[50vh] mx-auto border border-[#30363d] flex items-center justify-center shadow-2xl">
-                  {screenStream ? (
-                    <LocalVideoPreview stream={screenStream} />
-                  ) : (
-                    Object.entries(peers)
-                      .filter(([_, p]) => p.remoteStream?.getVideoTracks().length > 0)
-                      .map(([id, p]) => <LocalVideoPreview key={id} stream={p.remoteStream} />)
-                  )}
-                  <span className="absolute top-3 left-3 bg-black/70 px-3 py-1 rounded-full text-xs font-bold text-white backdrop-blur">
-                    🔴 Canlı Ekran Yayını
-                  </span>
-                </div>
-              )}
+              {/* Ekran Paylaşımı Varsa (Yayıncı veya İzleyici) */}
+              {(() => {
+                if (screenStream) {
+                  return (
+                    <ScreenSharePlayer
+                      stream={screenStream}
+                      isLocal={true}
+                      broadcasterName={currentUser?.username}
+                      currentResolution={viewerResolution}
+                      onSelectResolution={handleSelectViewerResolution}
+                    />
+                  );
+                }
+
+                const peerWithVideo = Object.entries(peers).find(([_, p]) =>
+                  p.remoteStream && p.remoteStream.getVideoTracks().length > 0
+                );
+
+                if (peerWithVideo) {
+                  const [peerId, peer] = peerWithVideo;
+                  const broadcasterUser = allUsers.find(u => u.id === peerId || u.socketId === peerId);
+                  return (
+                    <ScreenSharePlayer
+                      key={peerId}
+                      stream={peer.remoteStream}
+                      isLocal={false}
+                      broadcasterName={broadcasterUser?.username}
+                      currentResolution={viewerResolution}
+                      onSelectResolution={handleSelectViewerResolution}
+                    />
+                  );
+                }
+
+                return null;
+              })()}
 
               {/* Katılımcı Kartları */}
               <div className="flex-1 flex items-center justify-center py-6">
@@ -1760,10 +1804,123 @@ function CleanChatView({ channel, messages, onSendMessage, activeVoiceChannel, o
   );
 }
 
-function LocalVideoPreview({ stream }) {
-  const ref = React.useRef(null);
+function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution, onSelectResolution }) {
+  const containerRef = React.useRef(null);
+  const videoRef = React.useRef(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showQualityMenu, setShowQualityMenu] = useState(false);
+
   useEffect(() => {
-    if (ref.current && stream) ref.current.srcObject = stream;
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+      videoRef.current.play().catch(e => {
+        console.warn('[Video] Play interrupted / user gesture needed:', e);
+      });
+    }
   }, [stream]);
-  return <video ref={ref} autoPlay playsInline className="w-full h-full object-contain" />;
+
+  const toggleFullscreen = () => {
+    if (!containerRef.current) return;
+    if (!document.fullscreenElement) {
+      containerRef.current.requestFullscreen().then(() => setIsFullscreen(true)).catch(() => {});
+    } else {
+      document.exitFullscreen().then(() => setIsFullscreen(false)).catch(() => {});
+    }
+  };
+
+  useEffect(() => {
+    const handleFsChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', handleFsChange);
+    return () => document.removeEventListener('fullscreenchange', handleFsChange);
+  }, []);
+
+  const resolutions = [
+    { id: 'auto', label: '⚡ Otomatik', desc: 'İnternet Hızına Göre' },
+    { id: '1080p', label: '1080p', desc: 'FHD 60 FPS' },
+    { id: '720p', label: '720p', desc: 'HD 60 FPS' },
+    { id: '480p', label: '480p', desc: 'SD Tasarruf' },
+  ];
+
+  return (
+    <div
+      ref={containerRef}
+      className={`my-4 relative rounded-3xl overflow-hidden bg-black aspect-video max-h-[52vh] mx-auto border-2 border-indigo-500/40 flex items-center justify-center shadow-2xl group transition-all ${
+        isFullscreen ? 'w-screen h-screen max-h-screen my-0 rounded-none border-none' : 'w-full'
+      }`}
+    >
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted={isLocal}
+        className="w-full h-full object-contain cursor-pointer"
+        onClick={toggleFullscreen}
+      />
+
+      {/* Kontrol Çubuğu */}
+      <div className="absolute top-3 left-3 right-3 flex items-center justify-between pointer-events-none">
+        {/* Canlı Yayında Rozeti */}
+        <div className="flex items-center space-x-2 bg-black/80 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-white/10 pointer-events-auto">
+          <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse" />
+          <span className="text-xs font-black text-white">
+            {isLocal ? 'Senin Ekran Yayının' : `${broadcasterName || 'Arkadaşın'} Yayında`}
+          </span>
+        </div>
+
+        {/* Çözünürlük & Tam Ekran Araçları */}
+        <div className="flex items-center space-x-2 pointer-events-auto">
+          {/* Çözünürlük Seçici Menü */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowQualityMenu(!showQualityMenu)}
+              className="flex items-center space-x-1.5 bg-black/80 hover:bg-[#21262d] text-white text-xs font-bold px-3 py-1.5 rounded-xl border border-white/10 backdrop-blur-md transition shadow"
+              title="Çözünürlük / Kalite Seçimi"
+            >
+              <Tv className="w-3.5 h-3.5 text-amber-400" />
+              <span className="uppercase">{currentResolution || 'Auto'}</span>
+            </button>
+
+            {showQualityMenu && (
+              <div className="absolute right-0 mt-1.5 w-44 rounded-2xl bg-[#161b22] border border-[#30363d] p-1.5 shadow-2xl z-30 space-y-1 animate-in fade-in zoom-in-95 duration-150">
+                <div className="text-[10px] font-bold text-[#7d8590] uppercase px-2.5 py-1">
+                  İzleme Kalitesi
+                </div>
+                {resolutions.map((res) => (
+                  <button
+                    key={res.id}
+                    type="button"
+                    onClick={() => {
+                      onSelectResolution?.(res.id);
+                      setShowQualityMenu(false);
+                    }}
+                    className={`w-full text-left px-2.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center justify-between ${
+                      currentResolution === res.id
+                        ? 'bg-indigo-600 text-white shadow'
+                        : 'text-[#c9d1d9] hover:bg-[#21262d]'
+                    }`}
+                  >
+                    <span>{res.label}</span>
+                    <span className="text-[10px] opacity-75 font-normal">{res.desc}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Tam Ekran Butonu */}
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            className="p-1.5 rounded-xl bg-black/80 hover:bg-[#21262d] text-white border border-white/10 backdrop-blur-md transition shadow"
+            title={isFullscreen ? 'Tam Ekrandan Çık' : 'Tam Ekran Yap'}
+          >
+            {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
