@@ -58,11 +58,13 @@ io.on('connection', (socket) => {
   console.log(`[Socket Connected] ID: ${socket.id}`);
 
   // User join / handshake
-  socket.on('user:join', ({ username, avatar }) => {
+  socket.on('user:join', ({ id, username, avatar, user_code }) => {
     users[socket.id] = {
-      id: socket.id,
+      socketId: socket.id,
+      id: id || socket.id,
       username: username || `Oyuncu-${socket.id.slice(0, 4)}`,
       avatar: avatar || '🎮',
+      user_code: user_code || null,
       currentVoiceRoom: null,
       isMuted: false,
       isDeafened: false,
@@ -79,6 +81,28 @@ io.on('connection', (socket) => {
 
     // Broadcast updated users list
     io.emit('users:updated', Object.values(users));
+  });
+
+  // Instant friend request relay
+  socket.on('friend:request', ({ toUserCode, toUsername, fromUser }) => {
+    const target = Object.values(users).find(
+      u => (toUserCode && u.user_code === toUserCode) || (toUsername && u.username.toLowerCase() === toUsername.toLowerCase())
+    );
+    if (target) {
+      const targetSocketId = target.socketId || target.id;
+      io.to(targetSocketId).emit('friend:request-received', { fromUser });
+    }
+  });
+
+  // Friend response / accept relay
+  socket.on('friend:respond', ({ toUserCode, toUsername, fromUser, accepted }) => {
+    const target = Object.values(users).find(
+      u => (toUserCode && u.user_code === toUserCode) || (toUsername && u.username.toLowerCase() === toUsername.toLowerCase())
+    );
+    if (target) {
+      const targetSocketId = target.socketId || target.id;
+      io.to(targetSocketId).emit('friend:respond-received', { fromUser, accepted });
+    }
   });
 
   // Text message
@@ -112,20 +136,29 @@ io.on('connection', (socket) => {
   });
 
   // Dynamic room creation
-  socket.on('room:create', ({ name, limit }) => {
+  socket.on('room:create', ({ id, name, limit, created_by }) => {
     const user = users[socket.id];
     if (!name || !name.trim()) return;
 
-    const roomId = `room-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const roomId = id || `room-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const newRoom = {
       id: roomId,
       name: name.trim(),
       limit: parseInt(limit, 10) || 5,
+      created_by: created_by || (user ? user.id : null),
       creator: user ? user.username : 'Oyuncu'
     };
 
-    channels.voice.push(newRoom);
-    voiceRooms[roomId] = new Set();
+    const existingIdx = channels.voice.findIndex(v => v.id === roomId);
+    if (existingIdx >= 0) {
+      channels.voice[existingIdx] = newRoom;
+    } else {
+      channels.voice.push(newRoom);
+    }
+
+    if (!voiceRooms[roomId]) {
+      voiceRooms[roomId] = new Set();
+    }
 
     io.emit('channels:updated', channels);
     io.emit('voice:rooms-updated', getVoiceRoomsData());

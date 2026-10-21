@@ -46,8 +46,40 @@ export default function App() {
   const [newRoomName, setNewRoomName] = useState('');
   const [newRoomLimit, setNewRoomLimit] = useState(5);
 
-  // Incoming Room Invite
+  // Incoming Room Invite & Friend Requests
   const [incomingInvite, setIncomingInvite] = useState(null);
+  const [pendingFriendCount, setPendingFriendCount] = useState(0);
+  const [incomingFriendToast, setIncomingFriendToast] = useState(null);
+
+  const mergeVoiceChannels = (currentList = [], incomingList = []) => {
+    const map = new Map();
+    (currentList || []).forEach(item => {
+      if (item && item.id) map.set(item.id, item);
+    });
+    (incomingList || []).forEach(item => {
+      if (item && item.id) {
+        const existing = map.get(item.id) || {};
+        map.set(item.id, { ...existing, ...item });
+      }
+    });
+    return Array.from(map.values());
+  };
+
+  const loadPendingFriendCount = async (userId) => {
+    if (!userId) return;
+    try {
+      const { count, error } = await supabase
+        .from('friendships')
+        .select('*', { count: 'exact', head: true })
+        .eq('friend_id', userId)
+        .eq('status', 'pending');
+      if (!error && typeof count === 'number') {
+        setPendingFriendCount(count);
+      }
+    } catch (e) {
+      console.warn('Friend count err:', e);
+    }
+  };
 
   // 1. Check Supabase Auth Session
   useEffect(() => {
@@ -104,6 +136,8 @@ export default function App() {
       };
 
       setCurrentUser(userObj);
+      loadPendingFriendCount(user.id);
+
       if (socket.connected) {
         socket.emit('user:join', userObj);
       }
@@ -121,14 +155,15 @@ export default function App() {
         .order('created_at', { ascending: true });
 
       if (dbRooms && dbRooms.length > 0) {
+        const mapped = dbRooms.map(r => ({
+          id: r.id,
+          name: r.name,
+          limit: r.limit_count || 5,
+          created_by: r.created_by
+        }));
         setChannels(prev => ({
           ...prev,
-          voice: dbRooms.map(r => ({
-            id: r.id,
-            name: r.name,
-            limit: r.limit_count || 5,
-            created_by: r.created_by
-          }))
+          voice: mergeVoiceChannels(prev.voice, mapped)
         }));
       }
     } catch (err) {
@@ -154,6 +189,23 @@ export default function App() {
       supabase.removeChannel(roomChannel);
     };
   }, []);
+
+  // Listen for realtime friendship changes for current user
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    loadPendingFriendCount(currentUser.id);
+
+    const fChannel = supabase
+      .channel(`public:friendships-count-${currentUser.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'friendships' }, () => {
+        loadPendingFriendCount(currentUser.id);
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(fChannel);
+    };
+  }, [currentUser?.id]);
 
   // 2. Realtime Room Invites Listener
   useEffect(() => {
@@ -204,14 +256,20 @@ export default function App() {
     });
 
     socket.on('init:state', (state) => {
-      setChannels(state.channels);
+      setChannels(prev => ({
+        text: state.channels?.text || prev.text,
+        voice: mergeVoiceChannels(prev.voice, state.channels?.voice)
+      }));
       setAllUsers(state.users);
       setVoiceRooms(state.voiceRooms);
       setMessages(state.messages || {});
     });
 
     socket.on('channels:updated', (updatedChannels) => {
-      setChannels(updatedChannels);
+      setChannels(prev => ({
+        text: updatedChannels.text || prev.text,
+        voice: mergeVoiceChannels(prev.voice, updatedChannels.voice)
+      }));
     });
 
     socket.on('room:created', (newRoom) => {
@@ -220,9 +278,38 @@ export default function App() {
 
     socket.on('users:updated', (usersList) => {
       setAllUsers(usersList);
-      if (currentUser) {
-        const me = usersList.find(u => u.id === socket.id || u.username === currentUser.username);
-        if (me) setCurrentUser(prev => ({ ...prev, ...me }));
+      if (currentUser?.username) {
+        const me = usersList.find(u => (currentUser.id && (u.id === currentUser.id || u.socketId === socket.id)) || u.username === currentUser.username);
+        if (me) {
+          setCurrentUser(prev => prev ? ({
+            ...prev,
+            currentVoiceRoom: me.currentVoiceRoom,
+            isMuted: me.isMuted,
+            isDeafened: me.isDeafened,
+            isScreenSharing: me.isScreenSharing
+          }) : null);
+        }
+      }
+    });
+
+    socket.on('friend:request-received', ({ fromUser }) => {
+      setPendingFriendCount(prev => prev + 1);
+      setIncomingFriendToast({
+        type: 'request',
+        text: `${fromUser.username} size arkadaşlık isteği gönderdi!`,
+        fromUser
+      });
+      setTimeout(() => setIncomingFriendToast(null), 8000);
+    });
+
+    socket.on('friend:respond-received', ({ fromUser, accepted }) => {
+      if (accepted) {
+        setIncomingFriendToast({
+          type: 'accepted',
+          text: `${fromUser.username} arkadaşlık isteğinizi kabul etti! 🎉`,
+          fromUser
+        });
+        setTimeout(() => setIncomingFriendToast(null), 8000);
       }
     });
 
@@ -382,12 +469,15 @@ export default function App() {
 
     // 1. Save permanently to Supabase
     try {
-      await supabase.from('voice_rooms').insert({
+      const { error } = await supabase.from('voice_rooms').insert({
         id: roomId,
         name: roomName,
         limit_count: roomLimit,
         created_by: currentUser?.id
       });
+      if (error) {
+        console.warn('Supabase voice_rooms insert error:', error);
+      }
     } catch (err) {
       console.warn('voice_rooms insert err:', err);
     }
@@ -404,7 +494,8 @@ export default function App() {
       socket.emit('room:create', {
         id: roomId,
         name: roomName,
-        limit: roomLimit
+        limit: roomLimit,
+        created_by: currentUser?.id
       });
     }
 
@@ -472,6 +563,40 @@ export default function App() {
         </div>
       )}
 
+      {/* Arkadaşlık İsteği / Kabulü Toast Bildirimi */}
+      {incomingFriendToast && (
+        <div className="absolute top-5 right-5 z-50 bg-[#161b22] border-2 border-indigo-500 rounded-2xl p-4 shadow-2xl flex items-center space-x-3.5 animate-bounce">
+          <div className="w-10 h-10 rounded-xl bg-indigo-600/30 border border-indigo-500 flex items-center justify-center text-xl flex-shrink-0">
+            {incomingFriendToast.fromUser?.avatar || '🎉'}
+          </div>
+          <div>
+            <div className="text-sm font-bold text-white">
+              {incomingFriendToast.text}
+            </div>
+            <div className="text-[11px] text-indigo-400 font-medium">
+              Kadro sekmesinden istekleri görüntüleyebilirsiniz
+            </div>
+          </div>
+          <div className="flex items-center space-x-2 pl-2">
+            <button
+              onClick={() => {
+                setActiveTab('friends');
+                setIncomingFriendToast(null);
+              }}
+              className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs transition shadow"
+            >
+              Kadro'ya Git
+            </button>
+            <button
+              onClick={() => setIncomingFriendToast(null)}
+              className="p-1.5 rounded-xl bg-[#30363d] text-[#7d8590] hover:text-white transition"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ============================================================ */}
       {/* SOL PANEL: TEK, TEMİZ & SADE LİSTE                          */}
       {/* ============================================================ */}
@@ -527,7 +652,7 @@ export default function App() {
 
               <button
                 onClick={() => setActiveTab('friends')}
-                className={`flex-1 flex items-center justify-center space-x-1 py-2 rounded-lg text-xs font-bold transition ${
+                className={`flex-1 flex items-center justify-center space-x-1 py-2 rounded-lg text-xs font-bold transition relative ${
                   activeTab === 'friends'
                     ? 'bg-indigo-600 text-white shadow'
                     : 'text-[#7d8590] hover:text-white'
@@ -535,6 +660,11 @@ export default function App() {
               >
                 <Users className="w-3.5 h-3.5" />
                 <span>Kadro</span>
+                {pendingFriendCount > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px] font-black animate-pulse">
+                    {pendingFriendCount}
+                  </span>
+                )}
               </button>
             </div>
           </div>
@@ -708,6 +838,8 @@ export default function App() {
                 channels={channels}
                 allUsers={allUsers}
                 onJoinRoom={handleJoinVoiceChannel}
+                socket={socket}
+                onPendingCountChange={setPendingFriendCount}
               />
             )}
           </div>

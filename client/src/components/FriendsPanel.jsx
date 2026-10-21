@@ -18,7 +18,9 @@ export default function FriendsPanel({
   activeVoiceChannel,
   channels,
   allUsers,
-  onJoinRoom
+  onJoinRoom,
+  socket,
+  onPendingCountChange
 }) {
   const [friends, setFriends] = useState([]);
   const [pendingRequests, setPendingRequests] = useState([]);
@@ -91,6 +93,9 @@ export default function FriendsPanel({
 
       if (pendingData) {
         setPendingRequests(pendingData);
+        if (onPendingCountChange) {
+          onPendingCountChange(pendingData.length);
+        }
       }
     } catch (err) {
       console.warn('[Friends] Error loading friendships:', err);
@@ -133,10 +138,16 @@ export default function FriendsPanel({
         .from('profiles')
         .select('id, username, user_code')
         .or(`user_code.eq.${target},username.ilike.${target}`)
-        .single();
+        .maybeSingle();
 
       if (profileErr || !targetProfile) {
-        setSearchStatus({ type: 'error', text: `ID / Kullanıcı adı (${target}) bulunamadı. Lütfen 10 haneli ID'yi kontrol edin.` });
+        setSearchStatus({ type: 'error', text: `ID / Kullanıcı adı ("${target}") bulunamadı. Lütfen 10 haneli ID'yi kontrol edin.` });
+        setLoading(false);
+        return;
+      }
+
+      if (targetProfile.id === currentUser?.id) {
+        setSearchStatus({ type: 'error', text: 'Kendinize arkadaşlık isteği gönderemezsiniz!' });
         setLoading(false);
         return;
       }
@@ -159,21 +170,40 @@ export default function FriendsPanel({
       } else {
         setSearchStatus({ type: 'success', text: `Arkadaşlık isteği ${targetProfile.username} kullanıcısına gönderildi! 🎉` });
         setSearchCode('');
+
+        // Notify socket instantly
+        if (socket?.connected) {
+          socket.emit('friend:request', {
+            toUserCode: targetProfile.user_code,
+            toUsername: targetProfile.username,
+            fromUser: currentUser
+          });
+        }
       }
     } catch (err) {
-      setSearchStatus({ type: 'error', text: 'İstek gönderilirken hata oluştu.' });
+      setSearchStatus({ type: 'error', text: 'İstek gönderilirken hata oluştu: ' + (err.message || '') });
     } finally {
       setLoading(false);
     }
   };
 
-  const handleAcceptRequest = async (friendshipId) => {
-    await supabase
+  const handleAcceptRequest = async (friendshipId, requesterUser) => {
+    const { error } = await supabase
       .from('friendships')
       .update({ status: 'accepted' })
       .eq('id', friendshipId);
 
-    loadFriendships();
+    if (!error) {
+      if (socket?.connected && requesterUser) {
+        socket.emit('friend:respond', {
+          toUserCode: requesterUser.user_code,
+          toUsername: requesterUser.username,
+          fromUser: currentUser,
+          accepted: true
+        });
+      }
+      loadFriendships();
+    }
   };
 
   const handleRejectRequest = async (friendshipId) => {
@@ -282,6 +312,24 @@ export default function FriendsPanel({
           <span>Ekle</span>
         </button>
       </div>
+
+      {/* Gelen İstek Uyarısı */}
+      {pendingRequests.length > 0 && activeSubTab !== 'pending' && (
+        <div
+          onClick={() => setActiveSubTab('pending')}
+          className="cursor-pointer p-2.5 rounded-xl bg-indigo-600/20 border border-indigo-500/40 text-xs flex items-center justify-between text-indigo-300 hover:bg-indigo-600/30 transition group"
+        >
+          <div className="flex items-center space-x-2">
+            <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
+            <span className="font-bold text-white">
+              {pendingRequests.length} yeni arkadaşlık isteğiniz var!
+            </span>
+          </div>
+          <span className="text-[11px] underline font-bold group-hover:text-white">
+            İncele →
+          </span>
+        </div>
+      )}
 
       {/* 1. ARKADAŞLAR LİSTESİ */}
       {activeSubTab === 'list' && (
@@ -397,7 +445,7 @@ export default function FriendsPanel({
 
                 <div className="flex items-center space-x-1">
                   <button
-                    onClick={() => handleAcceptRequest(req.id)}
+                    onClick={() => handleAcceptRequest(req.id, req.user)}
                     title="Kabul Et"
                     className="p-1.5 rounded-xl bg-emerald-500 text-black hover:bg-emerald-400 transition"
                   >
