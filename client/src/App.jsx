@@ -45,6 +45,17 @@ import AdminPanelModal from './components/AdminPanelModal';
 import TurkCordLogo from './components/TurkCordLogo';
 import { realtimeSignaling } from './services/realtimeSignaling';
 
+const DEFAULT_FALLBACK_VOICE_ROOMS = [
+  { id: 'voice-lobi', name: 'Lobi', limit: 10, created_by: null, hasPassword: false },
+  { id: 'voice-oyun-1', name: 'Oyun Odası #1 (Squad)', limit: 5, created_by: null, hasPassword: false },
+  { id: 'voice-oyun-2', name: 'Oyun Odası #2 (Duo)', limit: 2, created_by: null, hasPassword: false }
+];
+
+const DEFAULT_FALLBACK_TEXT_CHANNELS = [
+  { id: 'genel', name: 'genel-sohbet' },
+  { id: 'oyunlar', name: 'oyun-sohbet' }
+];
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
@@ -55,7 +66,7 @@ export default function App() {
   const [isForceMuted, setIsForceMuted] = useState(false);
   const [adminNoticeModal, setAdminNoticeModal] = useState(null);
   const [activeTab, setActiveTab] = useState('voice'); // 'voice', 'chat', 'friends'
-  const [channels, setChannels] = useState({ text: [], voice: [] });
+  const [channels, setChannels] = useState({ text: DEFAULT_FALLBACK_TEXT_CHANNELS, voice: DEFAULT_FALLBACK_VOICE_ROOMS });
   const [activeTextChannel, setActiveTextChannel] = useState('genel');
   const [activeVoiceChannel, setActiveVoiceChannel] = useState(null);
   const [messages, setMessages] = useState({});
@@ -441,6 +452,7 @@ export default function App() {
       };
 
       setCurrentUser(userObj);
+      loadVoiceRooms();
       loadPendingFriendCount(user.id);
       loadFriendsData(user.id);
 
@@ -466,13 +478,23 @@ export default function App() {
         const mapped = dbRooms.map(parseRoomData);
         setChannels(prev => ({
           ...prev,
-          voice: mergeVoiceChannels(prev.voice, mapped)
+          voice: mergeVoiceChannels(DEFAULT_FALLBACK_VOICE_ROOMS, mapped)
+        }));
+      } else {
+        setChannels(prev => ({
+          ...prev,
+          voice: (prev.voice && prev.voice.length > 0) ? prev.voice : DEFAULT_FALLBACK_VOICE_ROOMS
         }));
       }
     } catch (err) {
       console.warn('[Rooms] Error loading voice_rooms:', err);
     }
   };
+
+  // Re-fetch voice rooms whenever currentUser or login session changes
+  useEffect(() => {
+    loadVoiceRooms();
+  }, [currentUser?.id]);
 
   useEffect(() => {
     loadVoiceRooms();
@@ -1233,7 +1255,7 @@ export default function App() {
     setFriendsSet(new Set());
     setPendingSentRequests(new Set());
     setMessages({});
-    setChannels({ text: [], voice: [] });
+    setChannels({ text: DEFAULT_FALLBACK_TEXT_CHANNELS, voice: DEFAULT_FALLBACK_VOICE_ROOMS });
     setVoiceRooms({});
     setAllUsers([]);
   };
@@ -1508,6 +1530,7 @@ export default function App() {
         <AuthModal 
           onAuthSuccess={(user) => {
             setCurrentUser(user);
+            loadVoiceRooms();
             loadFriendsData(user.id);
             loadPendingFriendCount(user.id);
             if (socket.connected) socket.emit('user:join', user);
