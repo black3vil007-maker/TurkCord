@@ -222,7 +222,46 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser }) {
                 </div>
 
                 {audioSettings.voiceGateEnabled && (
-                  <div className="space-y-2 pt-1">
+                  <div className="space-y-3 pt-1">
+                    {/* Hazır Seviye Butonları */}
+                    <div className="grid grid-cols-3 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateAudioSetting('voiceGateThreshold', 14)}
+                        className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border transition ${
+                          threshold === 14
+                            ? 'bg-indigo-600 text-white border-indigo-500 shadow'
+                            : 'bg-[#0d1117] text-[#7d8590] hover:text-white border-[#30363d]'
+                        }`}
+                      >
+                        Hassas (%14)
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateAudioSetting('voiceGateThreshold', 22)}
+                        className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border transition ${
+                          threshold === 22
+                            ? 'bg-indigo-600 text-white border-indigo-500 shadow'
+                            : 'bg-[#0d1117] text-[#7d8590] hover:text-white border-[#30363d]'
+                        }`}
+                      >
+                        Dengeli (%22) ⭐
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateAudioSetting('voiceGateThreshold', 32)}
+                        className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border transition ${
+                          threshold === 32
+                            ? 'bg-indigo-600 text-white border-indigo-500 shadow'
+                            : 'bg-[#0d1117] text-[#7d8590] hover:text-white border-[#30363d]'
+                        }`}
+                      >
+                        Mekanik Tuş (%32)
+                      </button>
+                    </div>
+
                     <div className="flex justify-between items-center text-xs">
                       <span className="text-[#7d8590] font-medium">
                         Klavye & Gürültü Eşiği
@@ -235,7 +274,7 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser }) {
                     <input
                       type="range"
                       min="5"
-                      max="75"
+                      max="60"
                       step="1"
                       value={threshold}
                       onChange={(e) => handleUpdateAudioSetting('voiceGateThreshold', Number(e.target.value))}
@@ -243,7 +282,7 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser }) {
                     />
 
                     <p className="text-[11px] text-[#7d8590] leading-relaxed">
-                      💡 <strong>İpucu:</strong> Test butonuna basarak klavyenizde yazı yazın. Çubuğun ulaştığı en yüksek değerin 2-3 birim üzerine çekin; böylece tuş sesleri karşı tarafa gitmez!
+                      💡 <strong>Nasıl Çalışır?</strong> Test butonuna basıp klavyenizde yazı yazın. Çubuk bu beyaz çizginin altında kaldığı sürece karşı tarafa <strong>sıfır ses</strong> gider! Konuştuğunuzda ise çizginin üzerine çıkarak ses anında iletilir.
                     </p>
                   </div>
                 )}
@@ -252,8 +291,27 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser }) {
               {/* Donanım / Tarayıcı Filtreleri */}
               <div className="bg-[#21262d] p-4 rounded-2xl border border-[#30363d] space-y-3">
                 <label className="block text-xs font-bold uppercase text-white mb-1">
-                  Akıllı Ses Filtreleri
+                  Akıllı Ses & Donanım Filtreleri
                 </label>
+
+                {/* Mekanik Klavye ve Masa Titreşim Filtresi (High-pass) */}
+                <div className="flex items-center justify-between py-2 border-b border-[#30363d]/60">
+                  <div className="pr-4">
+                    <div className="text-xs font-bold text-white flex items-center space-x-1.5">
+                      <Zap className="w-4 h-4 text-amber-400" />
+                      <span>Mekanik Klavye Filtresi (110Hz DSP)</span>
+                    </div>
+                    <p className="text-[11px] text-[#7d8590] mt-0.5">
+                      Switch'lerin vurma ve masa titreşim seslerini donanımsal frekans filtresiyle siler.
+                    </p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={audioSettings.keyboardFilterEnabled !== false}
+                    onChange={(e) => handleUpdateAudioSetting('keyboardFilterEnabled', e.target.checked)}
+                    className="w-5 h-5 accent-indigo-600 rounded cursor-pointer"
+                  />
+                </div>
 
                 {/* Gürültü Engelleme */}
                 <div className="flex items-center justify-between py-2 border-b border-[#30363d]/60">

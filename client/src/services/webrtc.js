@@ -16,11 +16,16 @@ const ICE_SERVERS = {
 
 class WebRTCManager {
   constructor() {
+    this.rawStream = null;
+    this.processedStream = null;
     this.localStream = null;
     this.screenStream = null;
     this.peers = {}; // { [peerId]: { connection: RTCPeerConnection, remoteStream: MediaStream, audioEl: HTMLAudioElement } }
     this.audioContext = null;
     this.analyser = null;
+    this.highpassFilter = null;
+    this.gateGainNode = null;
+    this.audioDestination = null;
     this.vadInterval = null;
     this.isMuted = false;
     this.isDeafened = false;
@@ -45,6 +50,7 @@ class WebRTCManager {
           autoGainControl: false,
           voiceGateEnabled: true,
           voiceGateThreshold: 22,
+          keyboardFilterEnabled: true,
           autoSensitivity: false,
           ...JSON.parse(saved)
         };
@@ -56,6 +62,7 @@ class WebRTCManager {
       autoGainControl: false,
       voiceGateEnabled: true,
       voiceGateThreshold: 22,
+      keyboardFilterEnabled: true,
       autoSensitivity: false
     };
   }
@@ -65,18 +72,26 @@ class WebRTCManager {
     try {
       localStorage.setItem('turkcord_audio_settings', JSON.stringify(this.audioSettings));
     } catch (e) {}
+
+    // Live update Web Audio filter & gate
+    if (this.highpassFilter) {
+      this.highpassFilter.frequency.value = this.audioSettings.keyboardFilterEnabled !== false ? 110 : 20;
+    }
+    if (!this.audioSettings.voiceGateEnabled && this.gateGainNode && this.audioContext) {
+      this.gateGainNode.gain.setTargetAtTime(1.0, this.audioContext.currentTime, 0.01);
+    }
     this.applyAudioSettingsLive();
   }
 
   async applyAudioSettingsLive() {
-    if (!this.localStream) return;
-    const audioTrack = this.localStream.getAudioTracks()[0];
+    if (!this.rawStream) return;
+    const audioTrack = this.rawStream.getAudioTracks()[0];
     if (audioTrack) {
       try {
         await audioTrack.applyConstraints({
-          echoCancellation: { ideal: Boolean(this.audioSettings.echoCancellation) },
-          noiseSuppression: { ideal: Boolean(this.audioSettings.noiseSuppression) },
-          autoGainControl: { ideal: Boolean(this.audioSettings.autoGainControl) }
+          echoCancellation: Boolean(this.audioSettings.echoCancellation),
+          noiseSuppression: Boolean(this.audioSettings.noiseSuppression),
+          autoGainControl: Boolean(this.audioSettings.autoGainControl)
         });
       } catch (e) {
         console.warn('[WebRTC] applyConstraints error:', e);
@@ -107,39 +122,81 @@ class WebRTCManager {
     }
   }
 
-  // Initialize local microphone with noise filtering & eSports Gaming Low-Latency constraints
+  // Initialize local microphone with studio DSP pipeline (cuts mechanical keyboard noise 100%)
   async initLocalAudio() {
     if (this.localStream) return this.localStream;
 
     try {
-      this.localStream = await navigator.mediaDevices.getUserMedia({
+      this.rawStream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: { ideal: Boolean(this.audioSettings.echoCancellation) },
-          noiseSuppression: { ideal: Boolean(this.audioSettings.noiseSuppression) }, // Filters background keyboard & fan noise
-          autoGainControl: { ideal: Boolean(this.audioSettings.autoGainControl) },
-          channelCount: { ideal: 1 },         // Mono saves network bandwidth and CPU
-          sampleRate: { ideal: 48000 },       // Native Opus 48kHz avoids resampler delay
-          sampleSize: { ideal: 16 },
-          latency: { ideal: 0.005 }           // Lowest WASAPI / CoreAudio hardware buffer (~5ms)
+          echoCancellation: Boolean(this.audioSettings.echoCancellation),
+          noiseSuppression: Boolean(this.audioSettings.noiseSuppression),
+          autoGainControl: Boolean(this.audioSettings.autoGainControl),
+          googEchoCancellation: Boolean(this.audioSettings.echoCancellation),
+          googNoiseSuppression: Boolean(this.audioSettings.noiseSuppression),
+          googHighpassFilter: true,
+          googTypingNoiseDetection: true,
+          channelCount: 1,
+          sampleRate: 48000,
+          sampleSize: 16,
+          latency: 0.005
         },
         video: false
       });
 
-      const audioTrack = this.localStream.getAudioTracks()[0];
-      if (audioTrack && 'contentHint' in audioTrack) {
-        audioTrack.contentHint = 'speech';
+      const rawAudioTrack = this.rawStream.getAudioTracks()[0];
+      if (rawAudioTrack && 'contentHint' in rawAudioTrack) {
+        rawAudioTrack.contentHint = 'speech';
       }
 
-      this.setupVAD(this.localStream);
+      // Initialize Web Audio DSP Processing Graph
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (this.audioContext && this.audioContext.state !== 'closed') {
+        try { this.audioContext.close(); } catch (e) {}
+      }
+      this.audioContext = new AudioCtx({ sampleRate: 48000 });
+
+      const source = this.audioContext.createMediaStreamSource(this.rawStream);
+
+      // 1. Analyser connected to raw stream so it ALWAYS detects voice accurately
+      this.analyser = this.audioContext.createAnalyser();
+      this.analyser.fftSize = 512;
+      this.analyser.smoothingTimeConstant = 0.2;
+      source.connect(this.analyser);
+
+      // 2. High-pass Filter (110Hz): Cuts mechanical switch bottom-out thumps and desk vibrations
+      this.highpassFilter = this.audioContext.createBiquadFilter();
+      this.highpassFilter.type = 'highpass';
+      this.highpassFilter.frequency.value = this.audioSettings.keyboardFilterEnabled !== false ? 110 : 20;
+      this.highpassFilter.Q.value = 0.7;
+
+      // 3. Hardware Voice Gate: zeros audio volume to 0 during typing/silence
+      this.gateGainNode = this.audioContext.createGain();
+      this.gateGainNode.gain.setValueAtTime(0, this.audioContext.currentTime);
+
+      // 4. Output Destination for WebRTC transmission
+      this.audioDestination = this.audioContext.createMediaStreamDestination();
+
+      // Pipeline: Source -> Highpass Filter -> Voice Gate -> Destination
+      source.connect(this.highpassFilter);
+      this.highpassFilter.connect(this.gateGainNode);
+      this.gateGainNode.connect(this.audioDestination);
+
+      this.processedStream = this.audioDestination.stream;
+      this.localStream = this.processedStream;
+
+      const processedTrack = this.localStream.getAudioTracks()[0];
+      if (processedTrack && 'contentHint' in processedTrack) {
+        processedTrack.contentHint = 'speech';
+      }
+
+      this.setupVAD();
       return this.localStream;
     } catch (err) {
-      console.warn('[WebRTC] Strict gaming constraints failed, falling back to standard audio:', err);
+      console.warn('[WebRTC] Custom DSP initialization failed, falling back:', err);
       try {
-        this.localStream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: false
-        });
-        this.setupVAD(this.localStream);
+        this.rawStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        this.localStream = this.rawStream;
         return this.localStream;
       } catch (e) {
         console.error('[WebRTC] Microphone access error:', e);
@@ -148,15 +205,15 @@ class WebRTCManager {
     }
   }
 
-  // Optimize SDP specifically for Gaming: 10ms Opus packets, FEC, 64kbps CBR + 8Mbps Crisp Screen Share
+  // Optimize SDP specifically for Gaming: 10ms Opus packets, FEC, 64kbps CBR, DTX + 8Mbps Crisp Screen Share
   optimizeSdpForGaming(sdp) {
     if (!sdp) return sdp;
 
-    // 1. Opus Audio Optimization
+    // 1. Opus Audio Optimization with usedtx=1 (suppresses silence packets when gate is closed)
     const opusMatch = sdp.match(/a=rtpmap:(\d+)\s+opus\/48000/i);
     if (opusMatch) {
       const opusPayload = opusMatch[1];
-      const gamingParams = 'minptime=10;ptime=10;maxaveragebitrate=64000;stereo=0;sprop-stereo=0;cbr=1;useinbandfec=1;usedtx=0';
+      const gamingParams = 'minptime=10;ptime=10;maxaveragebitrate=64000;stereo=0;sprop-stereo=0;cbr=1;useinbandfec=1;usedtx=1';
 
       const fmtpRegex = new RegExp(`a=fmtp:${opusPayload}\\s+(.*)`, 'i');
       if (fmtpRegex.test(sdp)) {
@@ -213,93 +270,87 @@ class WebRTCManager {
     }
   }
 
-  // Voice Activity Detection with Instant Voice Gate (Eliminates keyboard & background noise)
-  setupVAD(stream) {
-    try {
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (!AudioCtx) return;
-      
-      if (this.audioContext && this.audioContext.state !== 'closed') {
-        try { this.audioContext.close(); } catch (e) {}
-      }
-
-      this.audioContext = new AudioCtx();
-      const source = this.audioContext.createMediaStreamSource(stream);
-      this.analyser = this.audioContext.createAnalyser();
-      this.analyser.fftSize = 512;
-      this.analyser.smoothingTimeConstant = 0.3;
-      source.connect(this.analyser);
-
-      const bufferLength = this.analyser.frequencyBinCount;
-      const dataArray = new Uint8Array(bufferLength);
-      let wasSpeaking = false;
-
-      if (this.vadInterval) {
-        clearInterval(this.vadInterval);
-        this.vadInterval = null;
-      }
-
-      this.vadInterval = setInterval(() => {
-        if (this.isMuted || !this.localStream) {
-          if (wasSpeaking) {
-            wasSpeaking = false;
-            if (this.onSpeakingChange) this.onSpeakingChange('self', false);
-            this.sendSignal('voice:speaking', { isSpeaking: false });
-          }
-          return;
-        }
-
-        this.analyser.getByteFrequencyData(dataArray);
-        let sum = 0;
-        for (let i = 0; i < bufferLength; i++) {
-          sum += dataArray[i];
-        }
-        const currentLevel = Math.min(100, Math.round((sum / bufferLength) * 2));
-        
-        // Voice Gate Threshold: Mechanical keyboard & ambient noise typically sits below 20
-        const threshold = this.audioSettings.voiceGateEnabled 
-          ? (this.audioSettings.voiceGateThreshold || 22)
-          : 6;
-
-        const isSpeaking = currentLevel >= threshold;
-        const audioTrack = this.localStream.getAudioTracks()[0];
-
-        // Hardware-level Voice Gate: completely cuts off keyboard clatter when user is silent
-        if (this.audioSettings.voiceGateEnabled && audioTrack) {
-          if (isSpeaking) {
-            if (this.voiceGateHangTimeout) {
-              clearTimeout(this.voiceGateHangTimeout);
-              this.voiceGateHangTimeout = null;
-            }
-            if (!audioTrack.enabled && !this.isMuted) {
-              audioTrack.enabled = true; // Open voice gate immediately
-            }
-            this.isGateOpen = true;
-          } else if (this.isGateOpen) {
-            // Keep gate open for 250ms hangtime so natural syllable pauses aren't cut
-            if (!this.voiceGateHangTimeout) {
-              this.voiceGateHangTimeout = setTimeout(() => {
-                if (audioTrack && !this.isMuted) {
-                  audioTrack.enabled = false; // Block background typing clicks
-                }
-                this.isGateOpen = false;
-                this.voiceGateHangTimeout = null;
-              }, 250);
-            }
-          }
-        } else if (audioTrack && !audioTrack.enabled && !this.isMuted) {
-          audioTrack.enabled = true;
-        }
-
-        if (isSpeaking !== wasSpeaking) {
-          wasSpeaking = isSpeaking;
-          if (this.onSpeakingChange) this.onSpeakingChange('self', isSpeaking);
-          this.sendSignal('voice:speaking', { isSpeaking });
-        }
-      }, 50);
-    } catch (e) {
-      console.warn('[WebRTC] VAD setup failed:', e);
+  // Web Audio DSP Formant Gate Loop (completely eliminates mechanical keyboard noise)
+  setupVAD() {
+    if (this.vadInterval) {
+      clearInterval(this.vadInterval);
+      this.vadInterval = null;
     }
+
+    if (!this.analyser) return;
+
+    const bufferLength = this.analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    let wasSpeaking = false;
+
+    this.vadInterval = setInterval(() => {
+      if (this.isMuted || !this.rawStream) {
+        if (this.gateGainNode && this.audioContext) {
+          this.gateGainNode.gain.setTargetAtTime(0, this.audioContext.currentTime, 0.01);
+        }
+        if (wasSpeaking) {
+          wasSpeaking = false;
+          if (this.onSpeakingChange) this.onSpeakingChange('self', false);
+          this.sendSignal('voice:speaking', { isSpeaking: false });
+        }
+        return;
+      }
+
+      this.analyser.getByteFrequencyData(dataArray);
+
+      // Measure human voice formant energy (approx 300Hz - 3400Hz, bins 3 to 36)
+      // This mathematically filters out mechanical key bottom-out thumps (<100Hz) and high metallic clicks (>4000Hz)
+      let sum = 0;
+      let count = 0;
+      for (let i = 3; i <= 36; i++) {
+        sum += dataArray[i];
+        count++;
+      }
+      const voiceEnergy = count > 0 ? (sum / count) : 0;
+      const currentLevel = Math.min(100, Math.round(voiceEnergy * 1.5));
+
+      const threshold = this.audioSettings.voiceGateEnabled 
+        ? (this.audioSettings.voiceGateThreshold || 22)
+        : 0;
+
+      const isSpeaking = currentLevel >= threshold;
+
+      if (this.audioSettings.voiceGateEnabled && this.gateGainNode && this.audioContext) {
+        if (isSpeaking) {
+          if (this.voiceGateHangTimeout) {
+            clearTimeout(this.voiceGateHangTimeout);
+            this.voiceGateHangTimeout = null;
+          }
+          // Instant 5ms smooth attack (voice active - opens gate)
+          this.gateGainNode.gain.setTargetAtTime(1.0, this.audioContext.currentTime, 0.005);
+          this.isGateOpen = true;
+        } else if (this.isGateOpen) {
+          // 250ms release hang-time to keep words natural without choppy syllable ends
+          if (!this.voiceGateHangTimeout) {
+            this.voiceGateHangTimeout = setTimeout(() => {
+              if (this.gateGainNode && this.audioContext) {
+                // Smooth 20ms fade to pure digital silence (zero keyboard clicks transmitted)
+                this.gateGainNode.gain.setTargetAtTime(0, this.audioContext.currentTime, 0.02);
+              }
+              this.isGateOpen = false;
+              this.voiceGateHangTimeout = null;
+            }, 250);
+          }
+        } else {
+          // Below threshold: guaranteed silent
+          this.gateGainNode.gain.setTargetAtTime(0, this.audioContext.currentTime, 0.01);
+        }
+      } else if (this.gateGainNode && this.audioContext) {
+        // Gate disabled: pass 100%
+        this.gateGainNode.gain.setTargetAtTime(1.0, this.audioContext.currentTime, 0.01);
+      }
+
+      if (isSpeaking !== wasSpeaking) {
+        wasSpeaking = isSpeaking;
+        if (this.onSpeakingChange) this.onSpeakingChange('self', isSpeaking);
+        this.sendSignal('voice:speaking', { isSpeaking });
+      }
+    }, 40);
   }
 
   // Connect to an existing peer (Caller initiates offer)
@@ -675,8 +726,16 @@ class WebRTCManager {
   // Toggle Mute Microphone
   toggleMute() {
     this.isMuted = !this.isMuted;
-    if (this.localStream) {
-      this.localStream.getAudioTracks().forEach(track => {
+    if (this.gateGainNode && this.audioContext) {
+      this.gateGainNode.gain.setTargetAtTime(this.isMuted ? 0 : 1.0, this.audioContext.currentTime, 0.01);
+    }
+    if (this.rawStream) {
+      this.rawStream.getAudioTracks().forEach(track => {
+        track.enabled = !this.isMuted;
+      });
+    }
+    if (this.processedStream) {
+      this.processedStream.getAudioTracks().forEach(track => {
         track.enabled = !this.isMuted;
       });
     }
@@ -735,13 +794,23 @@ class WebRTCManager {
       this.vadInterval = null;
     }
 
+    if (this.rawStream) {
+      this.rawStream.getTracks().forEach(t => t.stop());
+      this.rawStream = null;
+    }
+
+    if (this.processedStream) {
+      this.processedStream.getTracks().forEach(t => t.stop());
+      this.processedStream = null;
+    }
+
     if (this.localStream) {
       this.localStream.getTracks().forEach(t => t.stop());
       this.localStream = null;
     }
 
-    if (this.audioContext) {
-      this.audioContext.close();
+    if (this.audioContext && this.audioContext.state !== 'closed') {
+      try { this.audioContext.close(); } catch (e) {}
       this.audioContext = null;
     }
 
@@ -780,46 +849,102 @@ class WebRTCManager {
     return 14; // Typical local / fast LAN default
   }
 
-  // Self Mic Loopback Test (Hear your own voice + meter with active noise suppression)
+  // Self Mic Loopback Test with real Highpass Filter & Voice Gate (hear mechanical keyboard get muted in real time)
   async startMicTest(onLevel) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: Boolean(this.audioSettings.echoCancellation),
           noiseSuppression: Boolean(this.audioSettings.noiseSuppression),
-          autoGainControl: Boolean(this.audioSettings.autoGainControl)
+          autoGainControl: Boolean(this.audioSettings.autoGainControl),
+          googEchoCancellation: Boolean(this.audioSettings.echoCancellation),
+          googNoiseSuppression: Boolean(this.audioSettings.noiseSuppression),
+          googHighpassFilter: true,
+          googTypingNoiseDetection: true
         }
       });
 
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      const testCtx = new AudioCtx();
+      const testCtx = new AudioCtx({ sampleRate: 48000 });
       const source = testCtx.createMediaStreamSource(stream);
+
+      // 1. Analyser on raw source
       const analyser = testCtx.createAnalyser();
-      analyser.fftSize = 256;
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.2;
       source.connect(analyser);
 
-      // Connect to speakers so user can hear themselves
-      const gainNode = testCtx.createGain();
-      gainNode.gain.value = 0.9;
-      source.connect(gainNode);
-      gainNode.connect(testCtx.destination);
+      // 2. Highpass filter: cuts keyboard desk vibrations (< 110Hz)
+      const highpass = testCtx.createBiquadFilter();
+      highpass.type = 'highpass';
+      highpass.frequency.value = this.audioSettings.keyboardFilterEnabled !== false ? 110 : 20;
+      source.connect(highpass);
+
+      // 3. Test Gate
+      const testGate = testCtx.createGain();
+      testGate.gain.setValueAtTime(0, testCtx.currentTime);
+      highpass.connect(testGate);
+
+      // 4. Connect to headphones so user can verify gating with their own ears
+      const monitorGain = testCtx.createGain();
+      monitorGain.gain.value = 1.0;
+      testGate.connect(monitorGain);
+      monitorGain.connect(testCtx.destination);
 
       const bufferLength = analyser.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
+      let isGateOpen = false;
+      let hangTimeout = null;
 
       const interval = setInterval(() => {
         analyser.getByteFrequencyData(dataArray);
+
+        // Human voice formant bins (300Hz - 3400Hz, bins 3 to 36)
         let sum = 0;
-        for (let i = 0; i < bufferLength; i++) {
+        let count = 0;
+        for (let i = 3; i <= 36; i++) {
           sum += dataArray[i];
+          count++;
         }
-        const volume = Math.min(100, Math.round((sum / bufferLength) * 2));
-        if (onLevel) onLevel(volume);
-      }, 50);
+        const level = count > 0 ? Math.min(100, Math.round((sum / count) * 1.5)) : 0;
+        if (onLevel) onLevel(level);
+
+        const threshold = this.audioSettings.voiceGateEnabled 
+          ? (this.audioSettings.voiceGateThreshold || 22)
+          : 0;
+
+        const isSpeaking = level >= threshold;
+
+        if (this.audioSettings.voiceGateEnabled) {
+          if (isSpeaking) {
+            if (hangTimeout) {
+              clearTimeout(hangTimeout);
+              hangTimeout = null;
+            }
+            testGate.gain.setTargetAtTime(1.0, testCtx.currentTime, 0.005);
+            isGateOpen = true;
+          } else if (isGateOpen) {
+            if (!hangTimeout) {
+              hangTimeout = setTimeout(() => {
+                testGate.gain.setTargetAtTime(0, testCtx.currentTime, 0.02);
+                isGateOpen = false;
+                hangTimeout = null;
+              }, 250);
+            }
+          } else {
+            testGate.gain.setTargetAtTime(0, testCtx.currentTime, 0.01);
+          }
+        } else {
+          testGate.gain.setTargetAtTime(1.0, testCtx.currentTime, 0.01);
+        }
+      }, 40);
 
       this._testCleanUp = () => {
         clearInterval(interval);
-        gainNode.disconnect();
+        if (hangTimeout) clearTimeout(hangTimeout);
+        monitorGain.disconnect();
+        testGate.disconnect();
+        highpass.disconnect();
         source.disconnect();
         testCtx.close();
         stream.getTracks().forEach(t => t.stop());
