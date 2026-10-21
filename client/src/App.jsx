@@ -18,7 +18,12 @@ import {
   Plus,
   X,
   Radio,
-  Check
+  Check,
+  Lock,
+  Unlock,
+  Pencil,
+  Trash2,
+  KeyRound
 } from 'lucide-react';
 import AuthModal from './components/AuthModal';
 import FriendsPanel from './components/FriendsPanel';
@@ -46,21 +51,51 @@ export default function App() {
   const [showCreateRoom, setShowCreateRoom] = useState(false);
   const [newRoomName, setNewRoomName] = useState('');
   const [newRoomLimit, setNewRoomLimit] = useState(5);
+  const [newRoomIsPassword, setNewRoomIsPassword] = useState(false);
+  const [newRoomPassword, setNewRoomPassword] = useState('');
+
+  // Edit / Password Room States
+  const [editingRoom, setEditingRoom] = useState(null);
+  const [passwordPromptRoom, setPasswordPromptRoom] = useState(null);
+  const [passwordInput, setPasswordInput] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+  const [unlockedRooms, setUnlockedRooms] = useState({});
 
   // Incoming Room Invite & Friend Requests
   const [incomingInvite, setIncomingInvite] = useState(null);
   const [pendingFriendCount, setPendingFriendCount] = useState(0);
   const [incomingFriendToast, setIncomingFriendToast] = useState(null);
 
+  const parseRoomData = (r) => {
+    let name = r.name || 'Ses Odası';
+    let password = r.password || null;
+
+    if (typeof name === 'string' && name.includes(':::pwd:::')) {
+      const parts = name.split(':::pwd:::');
+      name = parts[0];
+      password = parts[1] || null;
+    }
+
+    return {
+      id: r.id,
+      name,
+      limit: r.limit_count || r.limit || 5,
+      created_by: r.created_by,
+      password: password || null,
+      hasPassword: Boolean(password && String(password).trim().length > 0)
+    };
+  };
+
   const mergeVoiceChannels = (currentList = [], incomingList = []) => {
     const map = new Map();
     (currentList || []).forEach(item => {
-      if (item && item.id) map.set(item.id, item);
+      if (item && item.id) map.set(item.id, parseRoomData(item));
     });
     (incomingList || []).forEach(item => {
       if (item && item.id) {
+        const parsed = parseRoomData(item);
         const existing = map.get(item.id) || {};
-        map.set(item.id, { ...existing, ...item });
+        map.set(item.id, { ...existing, ...parsed });
       }
     });
     return Array.from(map.values());
@@ -156,12 +191,7 @@ export default function App() {
         .order('created_at', { ascending: true });
 
       if (dbRooms && dbRooms.length > 0) {
-        const mapped = dbRooms.map(r => ({
-          id: r.id,
-          name: r.name,
-          limit: r.limit_count || 5,
-          created_by: r.created_by
-        }));
+        const mapped = dbRooms.map(parseRoomData);
         setChannels(prev => ({
           ...prev,
           voice: mergeVoiceChannels(prev.voice, mapped)
@@ -282,6 +312,24 @@ export default function App() {
         ...prev,
         [newMsg.channelId]: [...(prev[newMsg.channelId] || []).filter(m => m.id !== newMsg.id), newMsg]
       }));
+    };
+
+    realtimeSignaling.onRoomUpdated = (updatedRoom) => {
+      const parsed = parseRoomData(updatedRoom);
+      setChannels(prev => ({
+        ...prev,
+        voice: prev.voice.map(v => v.id === parsed.id ? { ...v, ...parsed } : v)
+      }));
+    };
+
+    realtimeSignaling.onRoomDeleted = (roomId) => {
+      setChannels(prev => ({
+        ...prev,
+        voice: prev.voice.filter(v => v.id !== roomId)
+      }));
+      if (activeVoiceChannel === roomId) {
+        handleLeaveVoice();
+      }
     };
 
     return () => {
@@ -558,52 +606,187 @@ export default function App() {
     socket.emit('user:join', newUserData);
   };
 
-  // Create room submit (Saves permanently to Supabase & notifies socket)
+  const handleRoomClick = (room) => {
+    // If room is locked, user is not the creator, and hasn't unlocked it yet this session
+    if (room.hasPassword && room.created_by !== currentUser?.id && !unlockedRooms[room.id]) {
+      setPasswordPromptRoom(room);
+      setPasswordInput('');
+      setPasswordError('');
+      return;
+    }
+    handleJoinVoiceChannel(room.id);
+  };
+
+  const handlePasswordSubmit = (e) => {
+    e.preventDefault();
+    if (!passwordPromptRoom) return;
+
+    if (passwordInput.trim() === passwordPromptRoom.password) {
+      setUnlockedRooms(prev => ({ ...prev, [passwordPromptRoom.id]: true }));
+      const targetRoomId = passwordPromptRoom.id;
+      setPasswordPromptRoom(null);
+      setPasswordInput('');
+      setPasswordError('');
+      handleJoinVoiceChannel(targetRoomId);
+    } else {
+      setPasswordError('Hatalı şifre! Lütfen şifrenizi kontrol edip tekrar deneyin.');
+    }
+  };
+
+  // Create room submit (Saves permanently to Supabase & notifies all peers)
   const handleCreateRoomSubmit = async (e) => {
     e.preventDefault();
     if (!newRoomName.trim()) return;
 
     const roomId = `room-${Date.now()}`;
-    const roomName = newRoomName.trim();
+    const cleanName = newRoomName.trim();
     const roomLimit = parseInt(newRoomLimit, 10) || 5;
+    const roomPassword = (newRoomIsPassword && newRoomPassword.trim()) ? newRoomPassword.trim() : null;
 
     // 1. Save permanently to Supabase
     try {
-      const { error } = await supabase.from('voice_rooms').insert({
+      const dbPayload = {
         id: roomId,
-        name: roomName,
+        name: roomPassword ? `${cleanName}:::pwd:::${roomPassword}` : cleanName,
         limit_count: roomLimit,
         created_by: currentUser?.id
+      };
+
+      const { error: insertErr } = await supabase.from('voice_rooms').insert({
+        ...dbPayload,
+        password: roomPassword
       });
-      if (error) {
-        console.warn('Supabase voice_rooms insert error:', error);
+
+      if (insertErr) {
+        // Fallback without password column
+        await supabase.from('voice_rooms').insert(dbPayload);
       }
     } catch (err) {
       console.warn('voice_rooms insert err:', err);
     }
 
     // 2. Update local state immediately
-    const newRoomObj = { id: roomId, name: roomName, limit: roomLimit, created_by: currentUser?.id };
+    const newRoomObj = parseRoomData({
+      id: roomId,
+      name: cleanName,
+      limit: roomLimit,
+      limit_count: roomLimit,
+      created_by: currentUser?.id,
+      password: roomPassword
+    });
+
+    setUnlockedRooms(prev => ({ ...prev, [roomId]: true }));
+
     setChannels(prev => ({
       ...prev,
       voice: [...prev.voice.filter(v => v.id !== roomId), newRoomObj]
     }));
 
-    // 3. Notify socket if connected
-    if (socket.connected) {
-      socket.emit('room:create', {
-        id: roomId,
-        name: roomName,
-        limit: roomLimit,
-        created_by: currentUser?.id
-      });
+    // 3. Broadcast to all users
+    realtimeSignaling.sendRoomUpdated(newRoomObj);
+
+    if (socket && socket.connected) {
+      socket.emit('room:create', newRoomObj);
     }
 
     setNewRoomName('');
+    setNewRoomPassword('');
+    setNewRoomIsPassword(false);
     setShowCreateRoom(false);
 
     // 4. Immediately join the created room
     handleJoinVoiceChannel(roomId);
+  };
+
+  // Edit room submit
+  const handleEditRoomSubmit = async (e) => {
+    e.preventDefault();
+    if (!editingRoom || !editingRoom.name.trim()) return;
+
+    const roomId = editingRoom.id;
+    const cleanName = editingRoom.name.trim();
+    const roomLimit = parseInt(editingRoom.limit, 10) || 5;
+    const roomPassword = (editingRoom.hasPassword && editingRoom.password?.trim()) ? editingRoom.password.trim() : null;
+
+    const updatePayload = {
+      name: roomPassword ? `${cleanName}:::pwd:::${roomPassword}` : cleanName,
+      limit_count: roomLimit
+    };
+
+    try {
+      const { error } = await supabase
+        .from('voice_rooms')
+        .update({
+          ...updatePayload,
+          password: roomPassword
+        })
+        .eq('id', roomId);
+
+      if (error) {
+        // Fallback without password column
+        await supabase
+          .from('voice_rooms')
+          .update(updatePayload)
+          .eq('id', roomId);
+      }
+    } catch (err) {
+      console.warn('Edit room error:', err);
+    }
+
+    const updatedRoomObj = parseRoomData({
+      id: roomId,
+      name: cleanName,
+      limit: roomLimit,
+      limit_count: roomLimit,
+      created_by: editingRoom.created_by,
+      password: roomPassword
+    });
+
+    setChannels(prev => ({
+      ...prev,
+      voice: prev.voice.map(v => v.id === roomId ? { ...v, ...updatedRoomObj } : v)
+    }));
+
+    realtimeSignaling.sendRoomUpdated(updatedRoomObj);
+
+    if (socket && socket.connected) {
+      socket.emit('room:updated', updatedRoomObj);
+    }
+
+    setEditingRoom(null);
+  };
+
+  // Delete room
+  const handleDeleteRoom = async (roomToDelete) => {
+    if (!confirm(`"${roomToDelete.name}" odasını kalıcı olarak silmek istediğinizden emin misiniz?`)) {
+      return;
+    }
+
+    const roomId = roomToDelete.id;
+
+    if (activeVoiceChannel === roomId) {
+      handleLeaveVoice();
+    }
+
+    try {
+      await supabase
+        .from('voice_rooms')
+        .delete()
+        .eq('id', roomId);
+    } catch (err) {
+      console.warn('Delete room error:', err);
+    }
+
+    setChannels(prev => ({
+      ...prev,
+      voice: prev.voice.filter(v => v.id !== roomId)
+    }));
+
+    realtimeSignaling.sendRoomDeleted(roomId);
+
+    if (socket && socket.connected) {
+      socket.emit('room:deleted', { id: roomId });
+    }
   };
 
   // Accept incoming room invite
@@ -790,9 +973,12 @@ export default function App() {
 
                 {/* Oda Oluşturma Formu */}
                 {showCreateRoom && (
-                  <form onSubmit={handleCreateRoomSubmit} className="p-3 rounded-2xl bg-[#21262d] border border-indigo-500/50 space-y-2.5">
+                  <form onSubmit={handleCreateRoomSubmit} className="p-3.5 rounded-2xl bg-[#21262d] border border-indigo-500/50 space-y-3">
                     <div className="text-xs font-bold text-white flex items-center justify-between">
-                      <span>Yeni Ses Odası Aç</span>
+                      <span className="flex items-center space-x-1.5">
+                        <Volume2 className="w-4 h-4 text-indigo-400" />
+                        <span>Yeni Ses Odası Aç</span>
+                      </span>
                       <button type="button" onClick={() => setShowCreateRoom(false)} className="text-[#7d8590] hover:text-white">
                         <X className="w-3.5 h-3.5" />
                       </button>
@@ -810,7 +996,7 @@ export default function App() {
                     <div className="flex items-center justify-between text-xs text-[#7d8590]">
                       <span>Kişi Sınırı:</span>
                       <div className="flex space-x-1">
-                        {[2, 5, 10].map((num) => (
+                        {[2, 5, 10, 20].map((num) => (
                           <button
                             key={num}
                             type="button"
@@ -825,10 +1011,37 @@ export default function App() {
                       </div>
                     </div>
 
+                    {/* Şifre Seçeneği */}
+                    <div className="pt-2 border-t border-[#30363d]/60 space-y-2">
+                      <label className="flex items-center space-x-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={newRoomIsPassword}
+                          onChange={(e) => setNewRoomIsPassword(e.target.checked)}
+                          className="rounded border-[#30363d] text-amber-500 focus:ring-0"
+                        />
+                        <span className="text-xs font-bold text-white flex items-center space-x-1">
+                          <Lock className="w-3.5 h-3.5 text-amber-400" />
+                          <span>Şifreli Oda (İsteğe Bağlı)</span>
+                        </span>
+                      </label>
+
+                      {newRoomIsPassword && (
+                        <input
+                          type="text"
+                          required
+                          placeholder="Oda Şifresi / PIN (Örn: 1234)..."
+                          value={newRoomPassword}
+                          onChange={(e) => setNewRoomPassword(e.target.value)}
+                          className="w-full bg-[#0d1117] border border-amber-500/50 rounded-xl px-3 py-1.5 text-xs text-white outline-none"
+                        />
+                      )}
+                    </div>
+
                     <button
                       type="submit"
-                      disabled={!newRoomName.trim()}
-                      className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-1.5 rounded-xl text-xs transition shadow"
+                      disabled={!newRoomName.trim() || (newRoomIsPassword && !newRoomPassword.trim())}
+                      className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 rounded-xl text-xs transition shadow disabled:opacity-40"
                     >
                       Odayı Başlat
                     </button>
@@ -839,39 +1052,89 @@ export default function App() {
                 {channels.voice?.map((v) => {
                   const isCurrent = activeVoiceChannel === v.id;
                   const usersInRoom = voiceRooms[v.id] || [];
+                  const isOwner = v.created_by === currentUser?.id || !v.created_by;
 
                   return (
                     <div
                       key={v.id}
-                      onClick={() => handleJoinVoiceChannel(v.id)}
-                      className={`p-3 rounded-2xl cursor-pointer transition-all border ${
+                      onClick={() => handleRoomClick(v)}
+                      className={`p-3 rounded-2xl cursor-pointer transition-all border group relative ${
                         isCurrent
                           ? 'bg-emerald-500/10 border-emerald-500/50 shadow-sm'
                           : 'bg-[#21262d]/50 hover:bg-[#21262d] border-[#30363d]'
                       }`}
                     >
                       <div className="flex items-center justify-between">
-                        <div className="flex items-center space-x-2.5">
-                          <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${
+                        <div className="flex items-center space-x-2.5 truncate">
+                          <div className={`w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 ${
                             isCurrent ? 'bg-emerald-500 text-black' : 'bg-[#30363d] text-white'
                           }`}>
-                            <Volume2 className="w-4 h-4" />
+                            {v.hasPassword ? (
+                              <Lock className="w-4 h-4 text-amber-400" />
+                            ) : (
+                              <Volume2 className="w-4 h-4" />
+                            )}
                           </div>
-                          <div>
-                            <div className="text-sm font-bold text-white">{v.name}</div>
+                          <div className="truncate">
+                            <div className="text-sm font-bold text-white flex items-center space-x-1.5 truncate">
+                              <span className="truncate">{v.name}</span>
+                              {v.hasPassword && (
+                                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-400 font-semibold flex items-center space-x-0.5">
+                                  <Lock className="w-2.5 h-2.5" />
+                                  <span>Şifreli</span>
+                                </span>
+                              )}
+                            </div>
                             <div className="text-[11px] text-[#7d8590]">
                               {usersInRoom.length === 0 ? 'Oda boş' : `${usersInRoom.length}/${v.limit} kişi bağlı`}
                             </div>
                           </div>
                         </div>
 
-                        {isCurrent ? (
-                          <span className="text-[11px] font-bold text-emerald-400 bg-emerald-500/20 px-2 py-0.5 rounded-full animate-pulse">
-                            Bağlısın
-                          </span>
-                        ) : (
-                          <ChevronRight className="w-4 h-4 text-[#7d8590]" />
-                        )}
+                        <div className="flex items-center space-x-1">
+                          {/* Düzenle & Sil Butonları (Oda Sahibi veya Giriş Yapanlar) */}
+                          {isOwner && (
+                            <div className="hidden group-hover:flex items-center space-x-1 mr-1">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditingRoom({
+                                    id: v.id,
+                                    name: v.name,
+                                    limit: v.limit,
+                                    hasPassword: v.hasPassword,
+                                    password: v.password || '',
+                                    created_by: v.created_by
+                                  });
+                                }}
+                                className="p-1 rounded-lg text-[#7d8590] hover:text-white hover:bg-[#30363d] transition"
+                                title="Odayı Düzenle"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteRoom(v);
+                                }}
+                                className="p-1 rounded-lg text-rose-400 hover:text-white hover:bg-rose-500 transition"
+                                title="Odayı Sil"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
+
+                          {isCurrent ? (
+                            <span className="text-[11px] font-bold text-emerald-400 bg-emerald-500/20 px-2 py-0.5 rounded-full animate-pulse">
+                              Bağlısın
+                            </span>
+                          ) : (
+                            <ChevronRight className="w-4 h-4 text-[#7d8590]" />
+                          )}
+                        </div>
                       </div>
 
                       {usersInRoom.length > 0 && (
@@ -1236,6 +1499,178 @@ export default function App() {
           onClose={() => setShowSettings(false)}
           onUpdateUser={handleUpdateProfile}
         />
+      )}
+
+      {/* Şifreli Oda Giriş Modalı */}
+      {passwordPromptRoom && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <form
+            onSubmit={handlePasswordSubmit}
+            className="w-full max-w-sm rounded-3xl bg-[#161b22] border-2 border-amber-500/60 p-6 space-y-4 shadow-2xl animate-in fade-in zoom-in-95 duration-200"
+          >
+            <div className="flex items-center space-x-3">
+              <div className="w-12 h-12 rounded-2xl bg-amber-500/20 text-amber-400 flex items-center justify-center text-xl flex-shrink-0">
+                <Lock className="w-6 h-6" />
+              </div>
+              <div className="truncate">
+                <h3 className="text-base font-bold text-white leading-tight">Şifreli Oda</h3>
+                <p className="text-xs text-[#7d8590] mt-0.5 truncate">{passwordPromptRoom.name}</p>
+              </div>
+            </div>
+
+            <p className="text-xs text-[#c9d1d9]">
+              Bu ses odasına katılmak için oda şifresini giriniz:
+            </p>
+
+            <input
+              type="password"
+              autoFocus
+              required
+              placeholder="Oda Şifresi..."
+              value={passwordInput}
+              onChange={(e) => {
+                setPasswordInput(e.target.value);
+                setPasswordError('');
+              }}
+              className="w-full bg-[#0d1117] border border-[#30363d] focus:border-amber-500 rounded-xl px-4 py-2.5 text-sm text-white outline-none"
+            />
+
+            {passwordError && (
+              <div className="text-xs font-semibold text-rose-400 flex items-center space-x-1">
+                <span>⚠️</span>
+                <span>{passwordError}</span>
+              </div>
+            )}
+
+            <div className="flex space-x-2 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setPasswordPromptRoom(null);
+                  setPasswordInput('');
+                  setPasswordError('');
+                }}
+                className="flex-1 py-2.5 rounded-xl bg-[#21262d] hover:bg-[#30363d] text-xs font-bold text-[#c9d1d9] transition"
+              >
+                Vazgeç
+              </button>
+              <button
+                type="submit"
+                disabled={!passwordInput.trim()}
+                className="flex-1 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold transition shadow disabled:opacity-40"
+              >
+                Odaya Katıl
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Oda Düzenleme Modalı */}
+      {editingRoom && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <form
+            onSubmit={handleEditRoomSubmit}
+            className="w-full max-w-sm rounded-3xl bg-[#161b22] border-2 border-indigo-500/60 p-6 space-y-4 shadow-2xl animate-in fade-in zoom-in-95 duration-200"
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2.5 truncate">
+                <div className="w-10 h-10 rounded-2xl bg-indigo-600/20 text-indigo-400 flex items-center justify-center flex-shrink-0">
+                  <Pencil className="w-5 h-5" />
+                </div>
+                <div className="truncate">
+                  <h3 className="text-base font-bold text-white">Odayı Düzenle</h3>
+                  <p className="text-xs text-[#7d8590]">Ad, sınır ve şifreyi güncelle</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingRoom(null)}
+                className="p-1 rounded-lg text-[#7d8590] hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-[#7d8590]">Oda Adı</label>
+              <input
+                type="text"
+                required
+                value={editingRoom.name}
+                onChange={(e) => setEditingRoom({ ...editingRoom, name: e.target.value })}
+                className="w-full bg-[#0d1117] border border-[#30363d] focus:border-indigo-500 rounded-xl px-3.5 py-2 text-xs text-white outline-none"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-[#7d8590]">Kişi Sınırı</label>
+              <div className="flex space-x-2">
+                {[2, 5, 10, 20].map((num) => (
+                  <button
+                    key={num}
+                    type="button"
+                    onClick={() => setEditingRoom({ ...editingRoom, limit: num })}
+                    className={`flex-1 py-1.5 rounded-xl font-bold text-xs transition ${
+                      editingRoom.limit === num
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-[#0d1117] text-[#7d8590] border border-[#30363d]'
+                    }`}
+                  >
+                    {num}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Şifre Ayarı */}
+            <div className="pt-2 border-t border-[#30363d] space-y-2">
+              <label className="flex items-center space-x-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={editingRoom.hasPassword}
+                  onChange={(e) => setEditingRoom({
+                    ...editingRoom,
+                    hasPassword: e.target.checked,
+                    password: e.target.checked ? (editingRoom.password || '') : ''
+                  })}
+                  className="rounded border-[#30363d] text-amber-500 focus:ring-0"
+                />
+                <span className="text-xs font-bold text-white flex items-center space-x-1">
+                  <Lock className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Şifreli Oda Olsun</span>
+                </span>
+              </label>
+
+              {editingRoom.hasPassword && (
+                <input
+                  type="text"
+                  placeholder="Yeni Oda Şifresi (Örn: 1234)..."
+                  value={editingRoom.password || ''}
+                  onChange={(e) => setEditingRoom({ ...editingRoom, password: e.target.value })}
+                  className="w-full bg-[#0d1117] border border-amber-500/50 rounded-xl px-3.5 py-2 text-xs text-white outline-none"
+                />
+              )}
+            </div>
+
+            <div className="flex space-x-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setEditingRoom(null)}
+                className="flex-1 py-2.5 rounded-xl bg-[#21262d] hover:bg-[#30363d] text-xs font-bold text-[#c9d1d9] transition"
+              >
+                İptal
+              </button>
+              <button
+                type="submit"
+                disabled={!editingRoom.name.trim()}
+                className="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition shadow"
+              >
+                Kaydet
+              </button>
+            </div>
+          </form>
+        </div>
       )}
     </div>
   );

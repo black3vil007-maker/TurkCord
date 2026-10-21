@@ -166,6 +166,33 @@ io.on('connection', (socket) => {
     socket.emit('room:created', newRoom);
   });
 
+  // Dynamic room edit
+  socket.on('room:updated', (updatedRoom) => {
+    if (!updatedRoom || !updatedRoom.id) return;
+    const idx = channels.voice.findIndex(v => v.id === updatedRoom.id);
+    if (idx >= 0) {
+      channels.voice[idx] = { ...channels.voice[idx], ...updatedRoom };
+    } else {
+      channels.voice.push(updatedRoom);
+    }
+    io.emit('channels:updated', channels);
+  });
+
+  // Dynamic room delete
+  socket.on('room:deleted', ({ id }) => {
+    if (!id) return;
+    channels.voice = channels.voice.filter(v => v.id !== id);
+    if (voiceRooms[id]) {
+      for (const socketId of voiceRooms[id]) {
+        const u = users[socketId];
+        if (u) u.currentVoiceRoom = null;
+      }
+      delete voiceRooms[id];
+    }
+    io.emit('channels:updated', channels);
+    io.emit('voice:rooms-updated', getVoiceRoomsData());
+  });
+
   // Voice room join
   socket.on('voice:join', ({ roomId }) => {
     const user = users[socket.id];

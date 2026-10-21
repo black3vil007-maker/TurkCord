@@ -10,6 +10,8 @@ class RealtimeSignaling {
     this.onCandidate = null; // (fromId, candidate) => void
     this.onSpeaking = null; // (fromId, isSpeaking) => void
     this.onChatMessage = null; // (message) => void
+    this.onRoomUpdated = null; // (room) => void
+    this.onRoomDeleted = null; // (roomId) => void
     this.currentVoiceRoom = null;
     this.isMuted = false;
     this.isDeafened = false;
@@ -63,6 +65,18 @@ class RealtimeSignaling {
     this.channel.on('broadcast', { event: 'chat:message' }, ({ payload }) => {
       if (payload && this.onChatMessage) {
         this.onChatMessage(payload);
+      }
+    });
+
+    this.channel.on('broadcast', { event: 'room:updated' }, ({ payload }) => {
+      if (payload && this.onRoomUpdated) {
+        this.onRoomUpdated(payload);
+      }
+    });
+
+    this.channel.on('broadcast', { event: 'room:deleted' }, ({ payload }) => {
+      if (payload && this.onRoomDeleted) {
+        this.onRoomDeleted(payload.id);
       }
     });
 
@@ -170,6 +184,24 @@ class RealtimeSignaling {
       type: 'broadcast',
       event: 'chat:message',
       payload: message
+    });
+  }
+
+  sendRoomUpdated(room) {
+    if (!this.channel) return;
+    this.channel.send({
+      type: 'broadcast',
+      event: 'room:updated',
+      payload: room
+    });
+  }
+
+  sendRoomDeleted(roomId) {
+    if (!this.channel) return;
+    this.channel.send({
+      type: 'broadcast',
+      event: 'room:deleted',
+      payload: { id: roomId }
     });
   }
 
