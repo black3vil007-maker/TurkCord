@@ -147,6 +147,7 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser, init
   // Audio settings state loaded from webrtc
   const [audioSettings, setAudioSettings] = useState(() => webrtc.loadAudioSettings());
   const [soundEnabled, setSoundEnabled] = useState(() => soundEffects.isEnabled);
+  const [saveSuccessToast, setSaveSuccessToast] = useState(false);
 
   useEffect(() => {
     return () => {
@@ -223,8 +224,13 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser, init
 
     webrtc.stopMicTest();
     webrtc.saveAudioSettings(audioSettings);
+    webrtc.setInputVolume(inputVolume);
+    webrtc.setOutputVolume(outputVolume);
     onUpdateUser({ username: cleanUsername, avatar });
-    onClose();
+    setSaveSuccessToast(true);
+    setTimeout(() => {
+      onClose();
+    }, 450);
   };
 
   const threshold = audioSettings.voiceGateThreshold ?? 22;
@@ -233,6 +239,14 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser, init
   return (
     <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 select-none">
       <div className="bg-[#161b22] border border-[#30363d] rounded-3xl max-w-xl w-full p-6 shadow-2xl relative flex flex-col max-h-[92vh]">
+        {/* Başarı Bildirimi */}
+        {saveSuccessToast && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-emerald-600 text-white font-bold text-xs px-4 py-2 rounded-xl shadow-2xl flex items-center space-x-2 z-50 animate-in fade-in zoom-in-95">
+            <Check className="w-4 h-4" />
+            <span>Ayarlarınız başarıyla kaydedildi!</span>
+          </div>
+        )}
+
         {/* Kapat Butonu */}
         <button
           onClick={handleClose}
@@ -395,9 +409,25 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser, init
                       <Mic className="w-4 h-4 text-emerald-400" />
                       <span className="text-xs font-bold text-white uppercase tracking-wide">Mikrofon Giriş Ses Seviyesi</span>
                     </div>
-                    <span className="font-mono font-bold text-xs px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                      %{inputVolume}
-                    </span>
+                    <div className="flex items-center space-x-1">
+                      {[50, 100, 150, 200].map((v) => (
+                        <button
+                          key={v}
+                          type="button"
+                          onClick={() => handleInputVolumeChange(v)}
+                          className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded transition ${
+                            inputVolume === v
+                              ? 'bg-emerald-500 text-black'
+                              : 'bg-[#0d1117] text-[#8b949e] hover:text-white'
+                          }`}
+                        >
+                          %{v}
+                        </button>
+                      ))}
+                      <span className="font-mono font-bold text-xs px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 ml-1">
+                        %{inputVolume}
+                      </span>
+                    </div>
                   </div>
                   <input
                     type="range"
@@ -422,9 +452,25 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser, init
                       <Headphones className="w-4 h-4 text-indigo-400" />
                       <span className="text-xs font-bold text-white uppercase tracking-wide">Kulaklık / Hoparlör Çıkış Seviyesi</span>
                     </div>
-                    <span className="font-mono font-bold text-xs px-2 py-0.5 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                      %{outputVolume}
-                    </span>
+                    <div className="flex items-center space-x-1">
+                      {[50, 100, 150, 200].map((v) => (
+                        <button
+                          key={v}
+                          type="button"
+                          onClick={() => handleOutputVolumeChange(v)}
+                          className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded transition ${
+                            outputVolume === v
+                              ? 'bg-indigo-600 text-white'
+                              : 'bg-[#0d1117] text-[#8b949e] hover:text-white'
+                          }`}
+                        >
+                          %{v}
+                        </button>
+                      ))}
+                      <span className="font-mono font-bold text-xs px-2 py-0.5 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 ml-1">
+                        %{outputVolume}
+                      </span>
+                    </div>
                   </div>
                   <input
                     type="range"
@@ -440,6 +486,36 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser, init
                     <span>%100 (Varsayılan)</span>
                     <span>%200 (Güçlendirilmiş)</span>
                   </div>
+                </div>
+              </div>
+
+              {/* Yapay Zeka (AI) Gürültü Engelleme (RNNoise Neural Network) */}
+              <div className="bg-gradient-to-r from-[#131d2e] via-[#161f38] to-[#121826] p-4 rounded-2xl border-2 border-indigo-500/40 space-y-2 shadow-lg relative overflow-hidden">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-start space-x-3 pr-2">
+                    <div className="w-9 h-9 rounded-xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold flex-shrink-0 mt-0.5 shadow-sm">
+                      <Sparkles className="w-5 h-5 text-amber-400 animate-pulse" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-black text-white flex items-center space-x-2 uppercase tracking-wide">
+                        <span>Yapay Zeka (AI) Gürültü Engelleme</span>
+                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-extrabold border border-emerald-500/30">
+                          ÖNERİLEN
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-[#8b949e] mt-1 leading-relaxed">
+                        Telefon sesleri, çekirdek/cips atıştırma, mekanik klavye/fare tıklaması ve oda uğultularını derin öğrenme (RNNoise AI) ile mikrofondan %100 siler. Yalnızca senin sesini karşıya iletir.
+                      </p>
+                    </div>
+                  </div>
+                  <label className="flex items-center space-x-2 cursor-pointer flex-shrink-0 ml-2">
+                    <input
+                      type="checkbox"
+                      checked={audioSettings.aiDenoise !== false}
+                      onChange={(e) => handleUpdateAudioSetting('aiDenoise', e.target.checked)}
+                      className="w-5 h-5 accent-emerald-500 rounded cursor-pointer"
+                    />
+                  </label>
                 </div>
               </div>
 
@@ -532,66 +608,84 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser, init
 
                 {audioSettings.voiceGateEnabled && (
                   <div className="space-y-3 pt-1">
-                    {/* Hazır Seviye Butonları */}
-                    <div className="grid grid-cols-3 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleUpdateAudioSetting('voiceGateThreshold', 14)}
-                        className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border transition ${
-                          threshold === 14
-                            ? 'bg-indigo-600 text-white border-indigo-500 shadow'
-                            : 'bg-[#0d1117] text-[#7d8590] hover:text-white border-[#30363d]'
-                        }`}
-                      >
-                        Hassas (%14)
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => handleUpdateAudioSetting('voiceGateThreshold', 22)}
-                        className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border transition ${
-                          threshold === 22
-                            ? 'bg-indigo-600 text-white border-indigo-500 shadow'
-                            : 'bg-[#0d1117] text-[#7d8590] hover:text-white border-[#30363d]'
-                        }`}
-                      >
-                        Dengeli (%22) ⭐
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => handleUpdateAudioSetting('voiceGateThreshold', 32)}
-                        className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border transition ${
-                          threshold === 32
-                            ? 'bg-indigo-600 text-white border-indigo-500 shadow'
-                            : 'bg-[#0d1117] text-[#7d8590] hover:text-white border-[#30363d]'
-                        }`}
-                      >
-                        Mekanik Tuş (%32)
-                      </button>
+                    {/* Otomatik / Manuel Seçimi */}
+                    <div className="flex items-center justify-between pb-2 border-b border-[#30363d]/50">
+                      <div>
+                        <div className="text-xs font-bold text-white">Giriş Hassasiyetini Otomatik Belirle</div>
+                        <div className="text-[10px] text-[#7d8590]">Oda sessizliği ve klavye sesine göre eşiği anlık ayarlar.</div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(audioSettings.autoSensitivity)}
+                        onChange={(e) => handleUpdateAudioSetting('autoSensitivity', e.target.checked)}
+                        className="w-4 h-4 accent-indigo-600 rounded cursor-pointer"
+                      />
                     </div>
 
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-[#7d8590] font-medium">
-                        Klavye & Gürültü Eşiği
-                      </span>
-                      <span className="font-mono font-bold text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded-md border border-indigo-500/20">
-                        %{threshold}
-                      </span>
-                    </div>
+                    {!audioSettings.autoSensitivity && (
+                      <>
+                        {/* Hazır Seviye Butonları */}
+                        <div className="grid grid-cols-3 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateAudioSetting('voiceGateThreshold', 14)}
+                            className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border transition ${
+                              threshold === 14
+                                ? 'bg-indigo-600 text-white border-indigo-500 shadow'
+                                : 'bg-[#0d1117] text-[#7d8590] hover:text-white border-[#30363d]'
+                            }`}
+                          >
+                            Hassas (%14)
+                          </button>
 
-                    <input
-                      type="range"
-                      min="5"
-                      max="60"
-                      step="1"
-                      value={threshold}
-                      onChange={(e) => handleUpdateAudioSetting('voiceGateThreshold', Number(e.target.value))}
-                      className="w-full h-2 bg-[#0d1117] rounded-lg appearance-none cursor-pointer accent-indigo-500"
-                    />
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateAudioSetting('voiceGateThreshold', 22)}
+                            className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border transition ${
+                              threshold === 22
+                                ? 'bg-indigo-600 text-white border-indigo-500 shadow'
+                                : 'bg-[#0d1117] text-[#7d8590] hover:text-white border-[#30363d]'
+                            }`}
+                          >
+                            Dengeli (%22) ⭐
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateAudioSetting('voiceGateThreshold', 32)}
+                            className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border transition ${
+                              threshold === 32
+                                ? 'bg-indigo-600 text-white border-indigo-500 shadow'
+                                : 'bg-[#0d1117] text-[#7d8590] hover:text-white border-[#30363d]'
+                            }`}
+                          >
+                            Mekanik Tuş (%32)
+                          </button>
+                        </div>
+
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="text-[#7d8590] font-medium">
+                            Klavye & Gürültü Eşiği
+                          </span>
+                          <span className="font-mono font-bold text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded-md border border-indigo-500/20">
+                            %{threshold}
+                          </span>
+                        </div>
+
+                        <input
+                          type="range"
+                          min="5"
+                          max="60"
+                          step="1"
+                          value={threshold}
+                          onChange={(e) => handleUpdateAudioSetting('voiceGateThreshold', Number(e.target.value))}
+                          className="w-full h-2 bg-[#0d1117] rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                        />
+                      </>
+                    )}
 
                     <p className="text-[11px] text-[#7d8590] leading-relaxed">
-                      💡 <strong>Nasıl Çalışır?</strong> Test butonuna basıp klavyenizde yazı yazın. Çubuk bu beyaz çizginin altında kaldığı sürece karşı tarafa <strong>sıfır ses</strong> gider! Konuştuğunuzda ise çizginin üzerine çıkarak ses anında iletilir.
+                      💡 <strong>Nasıl Çalışır?</strong> Test butonuna basıp çekirdek çitleyin veya klavyede yazı yazın. Çubuk beyaz çizginin altında kaldığı sürece karşı tarafa <strong>sıfır ses</strong> gider! Konuştuğunuzda çizginin üzerine çıkarak ses anında ve pürüzsüz iletilir.
                     </p>
                   </div>
                 )}

@@ -1,6 +1,17 @@
 import { socket } from './socket';
 import { realtimeSignaling } from './realtimeSignaling';
 import { soundEffects } from './soundEffects';
+import { RnnoiseWorkletNode, loadRnnoise } from '@sapphi-red/web-noise-suppressor';
+
+function getAudioAssetUrl(fileName) {
+  try {
+    const base = import.meta.env?.BASE_URL || './';
+    const relativePath = base.endsWith('/') ? `${base}audio/${fileName}` : `${base}/audio/${fileName}`;
+    return new URL(relativePath, window.location.href).href;
+  } catch (e) {
+    return `./audio/${fileName}`;
+  }
+}
 
 const ICE_SERVERS = {
   iceServers: [
@@ -53,6 +64,9 @@ class WebRTCManager {
     this.outputVolume = Number(localStorage.getItem('turkcord_output_volume') || 100);
     this.micGainNode = null;
     this.keyboardFilterShelf = null;
+    this.rnnoiseNode = null;
+    this.compressor = null;
+    this.noiseFloor = 8;
 
     // Audio Input & Output Device Selection (Persisted)
     this.selectedInputDeviceId = localStorage.getItem('turkcord_input_device_id') || 'default';
@@ -380,6 +394,7 @@ class WebRTCManager {
       const saved = localStorage.getItem('turkcord_audio_settings');
       if (saved) {
         return {
+          aiDenoise: true,
           noiseSuppression: true,
           echoCancellation: true,
           autoGainControl: false,
@@ -387,22 +402,26 @@ class WebRTCManager {
           voiceGateThreshold: 22,
           keyboardFilterEnabled: true,
           autoSensitivity: false,
+          compressorEnabled: true,
           ...JSON.parse(saved)
         };
       }
     } catch (e) {}
     return {
+      aiDenoise: true,
       noiseSuppression: true,
       echoCancellation: true,
       autoGainControl: false,
       voiceGateEnabled: true,
       voiceGateThreshold: 22,
       keyboardFilterEnabled: true,
-      autoSensitivity: false
+      autoSensitivity: false,
+      compressorEnabled: true
     };
   }
 
   saveAudioSettings(settings) {
+    const prevAi = this.audioSettings?.aiDenoise;
     this.audioSettings = { ...this.audioSettings, ...settings };
     try {
       localStorage.setItem('turkcord_audio_settings', JSON.stringify(this.audioSettings));
@@ -410,7 +429,7 @@ class WebRTCManager {
 
     // Live update Web Audio filter & gate
     if (this.highpassFilter && this.audioContext && this.audioContext.state !== 'closed') {
-      const hpFreq = this.audioSettings.keyboardFilterEnabled !== false ? 140 : 80;
+      const hpFreq = this.audioSettings.keyboardFilterEnabled !== false ? 120 : 80;
       this.highpassFilter.frequency.setTargetAtTime(hpFreq, this.audioContext.currentTime, 0.01);
     }
     if (this.keyboardFilterShelf && this.audioContext && this.audioContext.state !== 'closed') {
@@ -422,7 +441,70 @@ class WebRTCManager {
         this.gateGainNode.gain.setTargetAtTime(1.0, this.audioContext.currentTime, 0.01);
       }
     }
+
+    // Toggle RNNoise AI filter live if setting changed
+    if (prevAi !== this.audioSettings.aiDenoise) {
+      if (this.audioSettings.aiDenoise !== false) {
+        this.initRnnoiseFilter().catch(() => {});
+      } else {
+        this.removeRnnoiseFilter();
+      }
+    }
+
     this.applyAudioSettingsLive();
+  }
+
+  async initRnnoiseFilter() {
+    if (!this.audioContext || this.audioContext.state === 'closed' || !this.highpassFilter || !this.keyboardFilterShelf) return;
+    if (this.rnnoiseNode) return;
+    if (this.audioSettings.aiDenoise === false) return;
+
+    try {
+      const workletUrl = getAudioAssetUrl('rnnoiseWorklet.js');
+      const wasmUrl = getAudioAssetUrl('rnnoise.wasm');
+      const wasmSimdUrl = getAudioAssetUrl('rnnoise_simd.wasm');
+
+      await this.audioContext.audioWorklet.addModule(workletUrl);
+      const wasmBinary = await loadRnnoise({ url: wasmUrl, simdUrl: wasmSimdUrl });
+
+      if (!this.audioContext || this.audioContext.state === 'closed') return;
+      if (this.rnnoiseNode) return;
+
+      this.rnnoiseNode = new RnnoiseWorkletNode(this.audioContext, {
+        maxChannels: 1,
+        wasmBinary
+      });
+
+      // Splice into chain: highpassFilter -> rnnoiseNode -> keyboardFilterShelf
+      this.highpassFilter.disconnect();
+      this.highpassFilter.connect(this.rnnoiseNode);
+      this.rnnoiseNode.connect(this.keyboardFilterShelf);
+
+      console.log('[WebRTC] RNNoise AI Neural Noise Suppression active!');
+    } catch (err) {
+      console.warn('[WebRTC] RNNoise init failed, fallback to standard DSP:', err);
+      this.rnnoiseNode = null;
+      try {
+        this.highpassFilter.disconnect();
+        this.highpassFilter.connect(this.keyboardFilterShelf);
+      } catch (e) {}
+    }
+  }
+
+  removeRnnoiseFilter() {
+    if (!this.rnnoiseNode) return;
+    try {
+      if (this.highpassFilter && this.keyboardFilterShelf) {
+        this.highpassFilter.disconnect();
+        this.rnnoiseNode.disconnect();
+        this.highpassFilter.connect(this.keyboardFilterShelf);
+      }
+      this.rnnoiseNode.destroy?.();
+      this.rnnoiseNode = null;
+      console.log('[WebRTC] RNNoise bypassed.');
+    } catch (e) {
+      console.warn('[WebRTC] removeRnnoiseFilter error:', e);
+    }
   }
 
   async applyAudioSettingsLive() {
@@ -522,25 +604,25 @@ class WebRTCManager {
         }
         this.micSourceNode = this.audioContext.createMediaStreamSource(this.rawStream);
 
-        // 2. Analyser for Real-time Voice Formants Detection (before gating)
-        this.analyser = this.audioContext.createAnalyser();
-        this.analyser.fftSize = 512;
-        this.analyser.smoothingTimeConstant = 0.2;
-        this.micSourceNode.connect(this.analyser);
-
-        // 3. High-Pass Filter: Cuts mechanical keyboard desk vibrations (< 140Hz)
+        // 2. High-Pass Filter: Cuts mechanical keyboard desk vibrations (< 120Hz)
         this.highpassFilter = this.audioContext.createBiquadFilter();
         this.highpassFilter.type = 'highpass';
-        this.highpassFilter.frequency.value = this.audioSettings.keyboardFilterEnabled !== false ? 140 : 80;
+        this.highpassFilter.frequency.value = this.audioSettings.keyboardFilterEnabled !== false ? 120 : 80;
         this.highpassFilter.Q.value = 0.707;
         this.micSourceNode.connect(this.highpassFilter);
 
-        // 4. Mechanical Switch Click Attenuation (cuts sharp 3.2kHz - 4.5kHz switch bottom-out clatter)
+        // 3. Mechanical Switch Click Attenuation (cuts sharp 3.8kHz switch clatter)
         this.keyboardFilterShelf = this.audioContext.createBiquadFilter();
         this.keyboardFilterShelf.type = 'highshelf';
         this.keyboardFilterShelf.frequency.value = 3800;
         this.keyboardFilterShelf.gain.value = this.audioSettings.keyboardFilterEnabled !== false ? -18 : 0;
         this.highpassFilter.connect(this.keyboardFilterShelf);
+
+        // 4. Analyser for Real-time Voice Formants Detection (measures post-denoise signal)
+        this.analyser = this.audioContext.createAnalyser();
+        this.analyser.fftSize = 512;
+        this.analyser.smoothingTimeConstant = 0.2;
+        this.keyboardFilterShelf.connect(this.analyser);
 
         // 5. Master Input Gain (controlled by user's inputVolume slider 0% - 200%)
         this.micGainNode = this.audioContext.createGain();
@@ -553,9 +635,25 @@ class WebRTCManager {
         this.gateGainNode.gain.value = this.audioSettings.voiceGateEnabled ? 0 : 1.0;
         this.micGainNode.connect(this.gateGainNode);
 
-        // 7. Destination Stream to send to WebRTC peer connections
+        // 7. Studio Peak Limiter / Dynamics Compressor (prevents ear-piercing clipping & shouting)
+        this.compressor = this.audioContext.createDynamicsCompressor();
+        this.compressor.threshold.value = -12;
+        this.compressor.knee.value = 8;
+        this.compressor.ratio.value = 6;
+        this.compressor.attack.value = 0.003;
+        this.compressor.release.value = 0.15;
+        this.gateGainNode.connect(this.compressor);
+
+        // 8. Destination Stream to send to WebRTC peer connections
         this.audioDestination = this.audioContext.createMediaStreamDestination();
-        this.gateGainNode.connect(this.audioDestination);
+        this.compressor.connect(this.audioDestination);
+
+        // 9. Asynchronously activate RNNoise AI Denoise if enabled
+        if (this.audioSettings.aiDenoise !== false) {
+          this.initRnnoiseFilter().catch(err => {
+            console.warn('[WebRTC] RNNoise filter init error, keeping standard filters:', err);
+          });
+        }
 
         this.processedStream = this.audioDestination.stream;
         this.localStream = this.processedStream;
@@ -670,10 +768,25 @@ class WebRTCManager {
         sum += dataArray[i];
         count++;
       }
-      const level = count > 0 ? Math.min(100, Math.round((sum / count) * 1.5)) : 0;
-      const threshold = this.audioSettings.voiceGateEnabled 
-        ? (this.audioSettings.voiceGateThreshold || 22)
-        : 0;
+      const rawLevel = count > 0 ? (sum / count) * 1.5 : 0;
+      const level = Math.min(100, Math.round(rawLevel));
+
+      // Adaptive ambient noise floor tracking
+      if (level < 25) {
+        this.noiseFloor = (this.noiseFloor * 0.95) + (level * 0.05);
+      }
+
+      let threshold = 22;
+      if (this.audioSettings.voiceGateEnabled) {
+        if (this.audioSettings.autoSensitivity) {
+          // Dynamic sensitivity based on room noise floor
+          threshold = Math.min(45, Math.max(14, Math.round(this.noiseFloor + 12)));
+        } else {
+          threshold = this.audioSettings.voiceGateThreshold ?? 22;
+        }
+      } else {
+        threshold = 0;
+      }
 
       const isSpeaking = level >= threshold;
 
@@ -1399,35 +1512,59 @@ class WebRTCManager {
       }
       const source = testCtx.createMediaStreamSource(stream);
 
-      // 1. Analyser on raw source
-      const analyser = testCtx.createAnalyser();
-      analyser.fftSize = 512;
-      analyser.smoothingTimeConstant = 0.2;
-      source.connect(analyser);
-
-      // 2. Highpass filter: cuts keyboard desk vibrations (< 140Hz)
+      // 1. Highpass filter: cuts keyboard desk vibrations (< 120Hz)
       const highpass = testCtx.createBiquadFilter();
       highpass.type = 'highpass';
-      highpass.frequency.value = this.audioSettings.keyboardFilterEnabled !== false ? 140 : 20;
+      highpass.frequency.value = this.audioSettings.keyboardFilterEnabled !== false ? 120 : 80;
       source.connect(highpass);
 
-      // 2b. Highshelf filter: cuts switch clicks
+      // 2. Highshelf filter: cuts switch clicks
       const highshelf = testCtx.createBiquadFilter();
       highshelf.type = 'highshelf';
-      highshelf.frequency.value = 4000;
+      highshelf.frequency.value = 3800;
       highshelf.gain.value = this.audioSettings.keyboardFilterEnabled !== false ? -18 : 0;
       highpass.connect(highshelf);
 
-      // 3. Test Gate
+      // 3. Analyser on filtered audio
+      const analyser = testCtx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.2;
+      highshelf.connect(analyser);
+
+      // 4. Test Gain Node (user inputVolume)
+      const testGain = testCtx.createGain();
+      testGain.gain.value = Math.max(0, this.inputVolume / 100);
+      highshelf.connect(testGain);
+
+      // 5. Test Gate
       const testGate = testCtx.createGain();
       testGate.gain.setValueAtTime(0, testCtx.currentTime);
-      highshelf.connect(testGate);
+      testGain.connect(testGate);
 
-      // 4. Connect to headphones so user can verify gating with their own ears
+      // 6. Connect to headphones so user can verify gating with their own ears
       const monitorGain = testCtx.createGain();
       monitorGain.gain.value = 1.0;
       testGate.connect(monitorGain);
       monitorGain.connect(testCtx.destination);
+
+      // 7. Optional RNNoise on test context
+      let testRnnoise = null;
+      if (this.audioSettings.aiDenoise !== false) {
+        (async () => {
+          try {
+            const workletUrl = getAudioAssetUrl('rnnoiseWorklet.js');
+            const wasmUrl = getAudioAssetUrl('rnnoise.wasm');
+            const wasmSimdUrl = getAudioAssetUrl('rnnoise_simd.wasm');
+            await testCtx.audioWorklet.addModule(workletUrl);
+            const wasmBinary = await loadRnnoise({ url: wasmUrl, simdUrl: wasmSimdUrl });
+            if (testCtx.state === 'closed') return;
+            testRnnoise = new RnnoiseWorkletNode(testCtx, { maxChannels: 1, wasmBinary });
+            highpass.disconnect();
+            highpass.connect(testRnnoise);
+            testRnnoise.connect(highshelf);
+          } catch (e) {}
+        })();
+      }
 
       const bufferLength = analyser.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
@@ -1480,11 +1617,16 @@ class WebRTCManager {
       this._testCleanUp = () => {
         clearInterval(interval);
         if (hangTimeout) clearTimeout(hangTimeout);
-        monitorGain.disconnect();
-        testGate.disconnect();
-        highpass.disconnect();
-        source.disconnect();
-        testCtx.close();
+        if (testRnnoise) {
+          try { testRnnoise.destroy?.(); } catch (e) {}
+        }
+        try { monitorGain.disconnect(); } catch (e) {}
+        try { testGate.disconnect(); } catch (e) {}
+        try { testGain.disconnect(); } catch (e) {}
+        try { highshelf.disconnect(); } catch (e) {}
+        try { highpass.disconnect(); } catch (e) {}
+        try { source.disconnect(); } catch (e) {}
+        try { testCtx.close(); } catch (e) {}
         stream.getTracks().forEach(t => t.stop());
       };
 

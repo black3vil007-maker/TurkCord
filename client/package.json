@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@sapphi-red/web-noise-suppressor": "^0.4.1",
     "@supabase/supabase-js": "^2.118.0",
     "lucide-react": "^1.16.0",
     "react": "^18.3.1",
