@@ -16,7 +16,9 @@ import {
   ShieldAlert,
   UserMinus,
   MicOff,
-  Ban
+  Ban,
+  ChevronDown,
+  ChevronRight
 } from 'lucide-react';
 
 export default function FriendsPanel({
@@ -40,6 +42,19 @@ export default function FriendsPanel({
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [activeSubTab, setActiveSubTab] = useState('list'); // 'list', 'pending', 'add'
+  const [isOnlineOpen, setIsOnlineOpen] = useState(true);
+  const [isOfflineOpen, setIsOfflineOpen] = useState(true);
+  const [friendFilter, setFriendFilter] = useState('all'); // 'all', 'online', 'offline'
+
+  const isFriendOnline = (profile) => {
+    return Boolean(allUsers?.some(
+      u => (u.username && profile?.username && u.username.toLowerCase() === profile.username.toLowerCase()) ||
+           (u.id && profile?.id && String(u.id) === String(profile.id))
+    ));
+  };
+
+  const onlineFriends = friends.filter(({ profile }) => isFriendOnline(profile));
+  const offlineFriends = friends.filter(({ profile }) => !isFriendOnline(profile));
 
   const myUserCode = currentUser?.user_code || (
     currentUser?.id ? Math.abs(hashCode(currentUser.id)).toString().padStart(10, '0').slice(0, 10) : '--------'
@@ -254,6 +269,143 @@ export default function FriendsPanel({
     }
   };
 
+  const renderFriendCard = ({ friendshipId, profile }) => {
+    const onlineData = allUsers?.find(
+      u => (u.username && profile?.username && u.username.toLowerCase() === profile.username.toLowerCase()) ||
+           (u.id && profile?.id && String(u.id) === String(profile.id))
+    );
+    const isOnline = Boolean(onlineData);
+    const inVoice = onlineData?.currentVoiceRoom;
+    const inVoiceRoomName = inVoice
+      ? channels.voice?.find(v => v.id === inVoice)?.name
+      : null;
+
+    return (
+      <div
+        key={friendshipId}
+        className={`p-3 rounded-2xl transition flex flex-col ${
+          isOnline
+            ? 'bg-[#13231b]/60 border border-emerald-500/30 hover:border-emerald-500/60 shadow-sm'
+            : 'bg-[#161b22]/70 border border-[#30363d]/70 opacity-75 hover:opacity-100'
+        }`}
+      >
+        <div className="flex items-center justify-between w-full">
+          <div className="flex items-center space-x-3 truncate">
+            <div className="relative flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center">
+              <UserAvatar avatar={profile.avatar} className="w-8 h-8 rounded-full border border-white/10" textClassName="text-2xl" />
+              {isOnline ? (
+                <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-emerald-400 border-2 border-[#161b22] shadow-[0_0_10px_#10b981] flex items-center justify-center">
+                  <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                </span>
+              ) : (
+                <span 
+                  className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-[#484f58] border-2 border-[#161b22]" 
+                  title="Çevrimdışı"
+                />
+              )}
+            </div>
+
+            <div className="truncate">
+              <div className="text-sm font-bold text-white truncate flex items-center space-x-2">
+                <span className="truncate">{profile.username}</span>
+                {isOnline ? (
+                  <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded-md bg-emerald-500/20 border border-emerald-500/40 text-[9px] font-black tracking-wider text-emerald-300 flex-shrink-0">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    <span>ONLINE</span>
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded-md bg-[#21262d] border border-[#30363d] text-[9px] font-bold text-[#8b949e] flex-shrink-0">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#6e7681]" />
+                    <span>OFFLINE</span>
+                  </span>
+                )}
+              </div>
+              <div className="text-[11px] font-medium truncate font-mono text-[#7d8590]">
+                {inVoiceRoomName ? (
+                  <span className="text-emerald-400 flex items-center space-x-1 font-sans font-bold">
+                    <Radio className="w-3 h-3 animate-pulse text-emerald-400" />
+                    <span>{inVoiceRoomName}</span>
+                  </span>
+                ) : (
+                  <span>ID: {profile.user_code || '------'}</span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center space-x-1.5">
+            {inVoice && inVoice !== activeVoiceChannel && (
+              <button
+                onClick={() => onJoinRoom(inVoice)}
+                title="Odaya Katıl"
+                className="px-2.5 py-1 rounded-xl bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500 hover:text-black text-xs font-bold transition flex items-center space-x-1"
+              >
+                <Volume2 className="w-3 h-3" />
+                <span>Katıl</span>
+              </button>
+            )}
+
+            {activeVoiceChannel && (
+              <button
+                onClick={() => handleInviteToRoom(profile.id)}
+                title="Odaya Davet Et"
+                className="px-2.5 py-1 rounded-xl bg-indigo-600 text-white hover:bg-indigo-500 text-xs font-bold transition flex items-center space-x-1 shadow"
+              >
+                <PhoneCall className="w-3 h-3" />
+                <span>Davet Et</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Admin Hızlı Moderasyon Aksiyonları */}
+        {isAdmin && (
+          <div className="w-full mt-2 pt-2 border-t border-amber-500/20 flex items-center justify-end space-x-1.5">
+            {inVoice && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (onKickUser) onKickUser({ id: profile.id, username: profile.username });
+                }}
+                className="px-2 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-black border border-amber-500/40 text-[10px] font-bold transition flex items-center space-x-1"
+                title="Kullanıcıyı ses odasından at"
+              >
+                <UserMinus className="w-3 h-3" />
+                <span>Odadan At</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (onToggleMute) onToggleMute({ id: profile.id, username: profile.username }, false);
+              }}
+              className="px-2 py-1 rounded-lg bg-[#21262d] hover:bg-rose-500 text-rose-300 hover:text-white border border-[#30363d] text-[10px] font-bold transition flex items-center space-x-1"
+              title="Kullanıcıyı sistem genelinde sustur"
+            >
+              <MicOff className="w-3 h-3" />
+              <span>Sustur</span>
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (onTogglePassive) onTogglePassive({ id: profile.id, username: profile.username }, false);
+              }}
+              className="px-2 py-1 rounded-lg bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/40 text-[10px] font-bold transition flex items-center space-x-1"
+              title="Hesabı pasife çek (giriş yapamaz)"
+            >
+              <Ban className="w-3 h-3" />
+              <span>Pasife Al</span>
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-3 pt-1">
       {/* 10 Haneli Kullanıcı ID Kartı */}
@@ -366,9 +518,9 @@ export default function FriendsPanel({
         </div>
       )}
 
-      {/* 1. ARKADAŞLAR LİSTESİ */}
+      {/* 1. ARKADAŞLAR LİSTESİ (ÇEVRİMİÇİ / ÇEVRİMDISI COMBOBOX & AKORDEON) */}
       {activeSubTab === 'list' && (
-        <div className="space-y-1.5">
+        <div className="space-y-3">
           {friends.length === 0 ? (
             <div className="text-center py-8 text-[#7d8590] text-xs">
               <Users className="w-8 h-8 mx-auto mb-2 opacity-50" />
@@ -381,141 +533,88 @@ export default function FriendsPanel({
               </button>
             </div>
           ) : (
-            friends.map(({ friendshipId, profile }) => {
-              const onlineData = allUsers?.find(
-                u => u.username?.toLowerCase() === profile.username?.toLowerCase()
-              );
-              const isOnline = Boolean(onlineData);
-              const inVoice = onlineData?.currentVoiceRoom;
-              const inVoiceRoomName = inVoice
-                ? channels.voice?.find(v => v.id === inVoice)?.name
-                : null;
-
-              return (
-                <div
-                  key={friendshipId}
-                  className={`p-3 rounded-2xl transition flex flex-col ${
-                    isOnline
-                      ? 'bg-[#13231b]/60 border border-emerald-500/30 hover:border-emerald-500/60 shadow-sm'
-                      : 'bg-[#161b22]/70 border border-[#30363d]/70 opacity-75 hover:opacity-100'
-                  }`}
+            <>
+              {/* Filtreleme Combobox & Kadro Durumu */}
+              <div className="flex items-center justify-between p-2.5 rounded-2xl bg-[#0d1117] border border-[#30363d] text-xs shadow-inner">
+                <span className="font-bold text-[#7d8590] flex items-center space-x-1.5 pl-1">
+                  <Users className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Kadro Görünümü:</span>
+                </span>
+                <select
+                  value={friendFilter}
+                  onChange={(e) => setFriendFilter(e.target.value)}
+                  className="bg-[#161b22] border border-[#30363d] text-white text-xs font-bold rounded-xl px-2.5 py-1 outline-none focus:border-indigo-500 cursor-pointer shadow"
                 >
-                  <div className="flex items-center justify-between w-full">
-                    <div className="flex items-center space-x-3 truncate">
-                      <div className="relative flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center">
-                        <UserAvatar avatar={profile.avatar} className="w-8 h-8 rounded-full border border-white/10" textClassName="text-2xl" />
-                        {isOnline ? (
-                          <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-emerald-400 border-2 border-[#161b22] shadow-[0_0_10px_#10b981] flex items-center justify-center">
-                            <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
-                          </span>
-                        ) : (
-                          <span 
-                            className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-[#484f58] border-2 border-[#161b22]" 
-                            title="Çevrimdışı"
-                          />
-                        )}
-                      </div>
+                  <option value="all">Tüm Arkadaşlar ({friends.length})</option>
+                  <option value="online">Sadece Çevrimiçi ({onlineFriends.length})</option>
+                  <option value="offline">Sadece Çevrimdışı ({offlineFriends.length})</option>
+                </select>
+              </div>
 
-                      <div className="truncate">
-                        <div className="text-sm font-bold text-white truncate flex items-center space-x-2">
-                          <span className="truncate">{profile.username}</span>
-                          {isOnline ? (
-                            <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded-md bg-emerald-500/20 border border-emerald-500/40 text-[9px] font-black tracking-wider text-emerald-300 flex-shrink-0">
-                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                              <span>ONLINE</span>
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded-md bg-[#21262d] border border-[#30363d] text-[9px] font-bold text-[#8b949e] flex-shrink-0">
-                              <span className="w-1.5 h-1.5 rounded-full bg-[#6e7681]" />
-                              <span>OFFLINE</span>
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-[11px] font-medium truncate font-mono text-[#7d8590]">
-                          {inVoiceRoomName ? (
-                            <span className="text-emerald-400 flex items-center space-x-1 font-sans font-bold">
-                              <Radio className="w-3 h-3 animate-pulse text-emerald-400" />
-                              <span>{inVoiceRoomName}</span>
-                            </span>
-                          ) : (
-                            <span>ID: {profile.user_code || '------'}</span>
-                          )}
-                        </div>
-                      </div>
+              {/* ÇEVRİMİÇİ (ONLINE) AKORDEON GRUBU */}
+              {(friendFilter === 'all' || friendFilter === 'online') && (
+                <div className="space-y-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setIsOnlineOpen(prev => !prev)}
+                    className="w-full flex items-center justify-between p-2.5 rounded-2xl bg-[#161b22]/90 hover:bg-[#21262d] border border-emerald-500/30 text-xs font-black transition select-none group shadow-sm"
+                  >
+                    <div className="flex items-center space-x-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_#10b981] animate-pulse" />
+                      <span className="text-emerald-400 tracking-wider">ÇEVRİMİÇİ</span>
+                      <span className="text-[11px] text-[#7d8590] font-mono">({onlineFriends.length})</span>
                     </div>
-
-                    {/* Actions */}
-                    <div className="flex items-center space-x-1.5">
-                      {inVoice && inVoice !== activeVoiceChannel && (
-                        <button
-                          onClick={() => onJoinRoom(inVoice)}
-                          title="Odaya Katıl"
-                          className="px-2.5 py-1 rounded-xl bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500 hover:text-black text-xs font-bold transition flex items-center space-x-1"
-                        >
-                          <Volume2 className="w-3 h-3" />
-                          <span>Katıl</span>
-                        </button>
-                      )}
-
-                      {activeVoiceChannel && (
-                        <button
-                          onClick={() => handleInviteToRoom(profile.id)}
-                          title="Odaya Davet Et"
-                          className="px-2.5 py-1 rounded-xl bg-indigo-600 text-white hover:bg-indigo-500 text-xs font-bold transition flex items-center space-x-1 shadow"
-                        >
-                          <PhoneCall className="w-3 h-3" />
-                          <span>Davet Et</span>
-                        </button>
-                      )}
+                    <div className="text-[#7d8590] group-hover:text-white transition">
+                      {isOnlineOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                     </div>
-                  </div>
+                  </button>
 
-                  {/* Admin Hızlı Moderasyon Aksiyonları */}
-                  {isAdmin && (
-                    <div className="w-full mt-2 pt-2 border-t border-amber-500/20 flex items-center justify-end space-x-1.5">
-                      {inVoice && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (onKickUser) onKickUser({ id: profile.id, username: profile.username });
-                          }}
-                          className="px-2 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-black border border-amber-500/40 text-[10px] font-bold transition flex items-center space-x-1"
-                          title="Kullanıcıyı ses odasından at"
-                        >
-                          <UserMinus className="w-3 h-3" />
-                          <span>Odadan At</span>
-                        </button>
+                  {isOnlineOpen && (
+                    <div className="space-y-1.5 pl-0.5 animate-in fade-in duration-150">
+                      {onlineFriends.length === 0 ? (
+                        <div className="p-3 text-center text-[11px] text-[#7d8590] italic rounded-2xl bg-[#0d1117]/50 border border-[#30363d]/40">
+                          Şu an çevrimiçi arkadaş yok
+                        </div>
+                      ) : (
+                        onlineFriends.map(renderFriendCard)
                       )}
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (onToggleMute) onToggleMute({ id: profile.id, username: profile.username }, false);
-                        }}
-                        className="px-2 py-1 rounded-lg bg-[#21262d] hover:bg-rose-500 text-rose-300 hover:text-white border border-[#30363d] text-[10px] font-bold transition flex items-center space-x-1"
-                        title="Kullanıcıyı sistem genelinde sustur"
-                      >
-                        <MicOff className="w-3 h-3" />
-                        <span>Sustur</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (onTogglePassive) onTogglePassive({ id: profile.id, username: profile.username }, false);
-                        }}
-                        className="px-2 py-1 rounded-lg bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/40 text-[10px] font-bold transition flex items-center space-x-1"
-                        title="Hesabı pasife çek (giriş yapamaz)"
-                      >
-                        <Ban className="w-3 h-3" />
-                        <span>Pasife Al</span>
-                      </button>
                     </div>
                   )}
                 </div>
-              );
-            })
+              )}
+
+              {/* ÇEVRİMDISI (OFFLINE) AKORDEON GRUBU */}
+              {(friendFilter === 'all' || friendFilter === 'offline') && (
+                <div className="space-y-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setIsOfflineOpen(prev => !prev)}
+                    className="w-full flex items-center justify-between p-2.5 rounded-2xl bg-[#161b22]/90 hover:bg-[#21262d] border border-[#30363d] text-xs font-black transition select-none group shadow-sm"
+                  >
+                    <div className="flex items-center space-x-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-[#6e7681]" />
+                      <span className="text-[#8b949e] tracking-wider">ÇEVRİMDISI</span>
+                      <span className="text-[11px] text-[#7d8590] font-mono">({offlineFriends.length})</span>
+                    </div>
+                    <div className="text-[#7d8590] group-hover:text-white transition">
+                      {isOfflineOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                    </div>
+                  </button>
+
+                  {isOfflineOpen && (
+                    <div className="space-y-1.5 pl-0.5 animate-in fade-in duration-150">
+                      {offlineFriends.length === 0 ? (
+                        <div className="p-3 text-center text-[11px] text-[#7d8590] italic rounded-2xl bg-[#0d1117]/50 border border-[#30363d]/40">
+                          Çevrimdışı arkadaş yok
+                        </div>
+                      ) : (
+                        offlineFriends.map(renderFriendCard)
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
           )}
         </div>
       )}

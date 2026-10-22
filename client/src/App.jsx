@@ -4312,16 +4312,18 @@ function CleanChatView({
             <span className="hidden md:inline">{isSoundOn ? 'Ses Açık' : 'Sessiz'}</span>
           </button>
 
-          {/* Sohbet Geçmişini Temizle Butonu */}
-          <button
-            type="button"
-            onClick={handleClearHistory}
-            className="px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 transition flex items-center space-x-1.5 text-xs font-bold shadow-sm"
-            title="Bu metin kanalının tüm sohbet geçmişini sil"
-          >
-            <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-            <span>Sohbeti Temizle</span>
-          </button>
+          {/* Sohbet Geçmişini Temizle Butonu (Yalnızca Adminler Görebilir) */}
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={handleClearHistory}
+              className="px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 transition flex items-center space-x-1.5 text-xs font-bold shadow-sm"
+              title="Bu metin kanalının tüm sohbet geçmişini sil"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+              <span>Sohbeti Temizle</span>
+            </button>
+          )}
 
           {/* Ses Kanalına Dön Butonu */}
           {activeVoiceChannel && (
