@@ -18,6 +18,7 @@ class RealtimeSignaling {
     this.onTextChannelDeleted = null; // (channelId) => void
     this.onScreenShareToggle = null; // (userId, isSharing) => void
     this.onQualityRequest = null; // (fromId, quality) => void
+    this.onVoiceUserState = null; // ({ userId, roomId, user }) => void
     this.currentVoiceRoom = null;
     this.isMuted = false;
     this.isDeafened = false;
@@ -123,15 +124,60 @@ class RealtimeSignaling {
       }
     });
 
+    // 3. Realtime Broadcast for Room Occupancy (Guarantees Admin & Users are immediately visible in rooms on all clients)
+    this.channel.on('broadcast', { event: 'voice:user-state' }, ({ payload }) => {
+      if (payload && this.onVoiceUserState) {
+        this.onVoiceUserState(payload);
+      }
+    });
+
+    this.channel.on('broadcast', { event: 'voice:query-state' }, () => {
+      if (this.currentVoiceRoom && this.currentUser) {
+        this.sendVoiceUserState(this.currentVoiceRoom, this.currentUser);
+      }
+    });
+
     this.channel.subscribe(async (status) => {
       if (status === 'SUBSCRIBED') {
         await this.syncPresence();
+        this.requestVoiceState();
       }
+    });
+  }
+
+  sendVoiceUserState(roomId, user) {
+    if (!this.channel) return;
+    const userData = user || this.currentUser;
+    if (!userData || !userData.id) return;
+    this.channel.send({
+      type: 'broadcast',
+      event: 'voice:user-state',
+      payload: {
+        userId: userData.id,
+        roomId: roomId || null,
+        user: {
+          id: userData.id,
+          username: userData.username,
+          avatar: userData.avatar,
+          user_code: userData.user_code,
+          isAdmin: Boolean(userData.isAdmin || userData.is_admin)
+        }
+      }
+    });
+  }
+
+  requestVoiceState() {
+    if (!this.channel) return;
+    this.channel.send({
+      type: 'broadcast',
+      event: 'voice:query-state',
+      payload: { from: this.currentUser?.id }
     });
   }
 
   async setVoiceRoom(roomId) {
     this.currentVoiceRoom = roomId;
+    this.sendVoiceUserState(roomId, this.currentUser);
     await this.syncPresence();
   }
 

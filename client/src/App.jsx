@@ -1390,10 +1390,91 @@ export default function App() {
       webrtc.setVideoQualityForPeer(viewerId, requestedQuality);
     };
 
+    realtimeSignaling.onVoiceUserState = ({ userId, roomId, user }) => {
+      if (!userId || !user) return;
+      const myId = currentUserRef.current?.id;
+
+      setVoiceRooms(prev => {
+        const next = { ...prev };
+        // Clean this user from all voice rooms
+        for (const rId in next) {
+          next[rId] = (next[rId] || []).filter(u => u.id !== userId && (u.username && user.username ? u.username.toLowerCase() !== user.username.toLowerCase() : true));
+        }
+        // If they joined a room, add them
+        if (roomId) {
+          if (!next[roomId]) next[roomId] = [];
+          if (!next[roomId].some(u => u.id === userId)) {
+            next[roomId].push(user);
+          }
+        }
+        // Always retain our own current active room
+        const activeRoom = activeVoiceChannelRef.current;
+        if (activeRoom && myId && currentUserRef.current) {
+          if (!next[activeRoom]) next[activeRoom] = [];
+          if (!next[activeRoom].some(u => u.id === myId)) {
+            next[activeRoom].push({
+              id: currentUserRef.current.id,
+              username: currentUserRef.current.username,
+              avatar: currentUserRef.current.avatar,
+              user_code: currentUserRef.current.user_code,
+              isAdmin: Boolean(currentUserRef.current.isAdmin || currentUserRef.current.is_admin),
+              socketId: socket?.id
+            });
+          }
+        }
+        return next;
+      });
+
+      setAllUsers(prev => {
+        const exists = prev.some(u => u.id === userId);
+        if (exists) {
+          return prev.map(u => u.id === userId ? { ...u, ...user, currentVoiceRoom: roomId } : u);
+        } else {
+          return [...prev, { ...user, currentVoiceRoom: roomId }];
+        }
+      });
+
+      // Peer mesh sync when in the same room on cloud
+      const activeRoom = activeVoiceChannelRef.current;
+      if (activeRoom && roomId === activeRoom && userId !== myId && (!socket || !socket.connected)) {
+        const amIInitiator = String(myId) > String(userId);
+        const peerObj = webrtc.peers[userId];
+        const connState = peerObj?.connection?.connectionState;
+        const isAlive = peerObj && (connState === 'connected' || connState === 'connecting');
+        if (amIInitiator && !isAlive) {
+          console.log('[Realtime Broadcast] Initiating mesh audio connection:', user.username, userId);
+          webrtc.createPeerConnection(userId, true);
+        }
+      } else if (activeRoom && roomId !== activeRoom && userId !== myId) {
+        if (webrtc.peers[userId]) {
+          webrtc.closePeer(userId);
+          setPeers({ ...webrtc.peers });
+        }
+      }
+    };
+
     return () => {
       realtimeSignaling.destroy();
     };
   }, [currentUser?.id]);
+
+  // Periodic Voice Room Presence Heartbeat (Ensures all peers on Web/App immediately see occupants)
+  useEffect(() => {
+    if (!activeVoiceChannel || !currentUser?.id) return;
+
+    // Send an immediate broadcast confirmation
+    if (activeVoiceChannelRef.current && currentUserRef.current) {
+      realtimeSignaling.sendVoiceUserState(activeVoiceChannelRef.current, currentUserRef.current);
+    }
+
+    const interval = setInterval(() => {
+      if (activeVoiceChannelRef.current && currentUserRef.current) {
+        realtimeSignaling.sendVoiceUserState(activeVoiceChannelRef.current, currentUserRef.current);
+      }
+    }, 7000);
+
+    return () => clearInterval(interval);
+  }, [activeVoiceChannel, currentUser?.id]);
 
   // 4. Socket & WebRTC setup (Local & Fallback)
   useEffect(() => {
@@ -1768,6 +1849,7 @@ export default function App() {
     });
 
     soundEffects.playSelfJoin();
+    realtimeSignaling.sendVoiceUserState(roomId, currentUserRef.current);
 
     // Oda kişi sınırı (Limit) kontrolü
     const existingInRoom = voiceRooms[roomId] || [];
@@ -1859,6 +1941,7 @@ export default function App() {
     });
 
     realtimeSignaling.setVoiceRoom(null);
+    realtimeSignaling.sendVoiceUserState(null, currentUserRef.current);
 
     if (socket && socket.connected) {
       socket.emit('voice:leave');
@@ -2424,7 +2507,16 @@ export default function App() {
 
   const voiceChannels = (channels && Array.isArray(channels.voice)) ? channels.voice : DEFAULT_FALLBACK_VOICE_ROOMS;
   const textChannels = (channels && Array.isArray(channels.text)) ? channels.text : DEFAULT_FALLBACK_TEXT_CHANNELS;
-  const currentVoiceRoomUsers = activeVoiceChannel ? (voiceRooms[activeVoiceChannel] || []) : [];
+  const rawCurrentVoiceUsers = activeVoiceChannel ? (voiceRooms[activeVoiceChannel] || []) : [];
+  const currentVoiceRoomUsers = (activeVoiceChannel && currentUser && !rawCurrentVoiceUsers.some(u => u.id === currentUser.id))
+    ? [...rawCurrentVoiceUsers, {
+        id: currentUser.id,
+        username: currentUser.username,
+        avatar: currentUser.avatar,
+        user_code: currentUser.user_code,
+        isAdmin: Boolean(currentUser.isAdmin || currentUser.is_admin)
+      }]
+    : rawCurrentVoiceUsers;
   const currentVoiceObj = voiceChannels.find(v => v.id === activeVoiceChannel);
   const currentTextObj = textChannels.find(c => c.id === activeTextChannel) || textChannels[0] || DEFAULT_FALLBACK_TEXT_CHANNELS[0];
 
@@ -2822,7 +2914,19 @@ export default function App() {
                 {channels.voice?.map((v) => {
                   const isCurrent = activeVoiceChannel === v.id;
                   const isSelected = selectedVoiceRoomId === v.id;
-                  const usersInRoom = voiceRooms[v.id] || [];
+                  let usersInRoom = voiceRooms[v.id] || [];
+                  if (isCurrent && currentUser && !usersInRoom.some(u => u.id === currentUser.id)) {
+                    usersInRoom = [
+                      ...usersInRoom,
+                      {
+                        id: currentUser.id,
+                        username: currentUser.username,
+                        avatar: currentUser.avatar,
+                        user_code: currentUser.user_code,
+                        isAdmin: Boolean(currentUser.isAdmin || currentUser.is_admin)
+                      }
+                    ];
+                  }
                   const canManage = Boolean(currentUser && (isAdmin || (v.created_by && v.created_by === currentUser.id)));
 
                   return (
