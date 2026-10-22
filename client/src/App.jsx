@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { socket } from './services/socket';
 import { webrtc } from './services/webrtc';
 import { supabase } from './services/supabase';
@@ -5333,6 +5334,7 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
   const [showQualityMenu, setShowQualityMenu] = useState(false);
   const [isEnded, setIsEnded] = useState(false);
 
+  // Attach stream to video element whenever stream or fullscreen mode changes
   useEffect(() => {
     if (!stream) {
       setIsEnded(true);
@@ -5378,7 +5380,7 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
       videoTrack.removeEventListener('ended', handleEnded);
       videoTrack.removeEventListener('unmute', handleUnmute);
     };
-  }, [stream, isLocal]);
+  }, [stream, isLocal, isFullscreen]);
 
   // Adjust viewer audio volume dynamically
   useEffect(() => {
@@ -5390,9 +5392,11 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
 
   const toggleFullscreen = () => {
     if (!isFullscreen) {
-      if (containerRef.current && containerRef.current.requestFullscreen) {
-        containerRef.current.requestFullscreen().catch(() => {});
-      }
+      try {
+        if (document.documentElement.requestFullscreen) {
+          document.documentElement.requestFullscreen().catch(() => {});
+        }
+      } catch (e) {}
       setIsFullscreen(true);
     } else {
       if (document.fullscreenElement) {
@@ -5404,11 +5408,13 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
 
   useEffect(() => {
     const handleFsChange = () => {
-      setIsFullscreen(Boolean(document.fullscreenElement));
+      if (!document.fullscreenElement && isFullscreen) {
+        setIsFullscreen(false);
+      }
     };
     const handleKeyDown = (e) => {
       if (e.key === 'Escape' && isFullscreen) {
-        setIsFullscreen(false);
+        toggleFullscreen();
       }
     };
     document.addEventListener('fullscreenchange', handleFsChange);
@@ -5446,16 +5452,31 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
     );
   }
 
-  return (
+  const playerContent = (
     <div
       ref={containerRef}
-      className={`relative rounded-3xl overflow-hidden bg-black flex items-center justify-center shadow-2xl group transition-all select-none ${
+      className={`overflow-hidden bg-black flex items-center justify-center shadow-2xl group select-none ${
         isFullscreen
-          ? 'fixed inset-0 z-[99999] w-screen h-screen max-h-none rounded-none border-none'
+          ? 'fixed inset-0 top-0 left-0 right-0 bottom-0 z-[999999] w-screen h-screen m-0 p-0 rounded-none border-none'
           : isTheater
-          ? 'w-full flex-1 min-h-[60vh] max-h-[82vh] my-2 border-2 border-indigo-500/50'
-          : 'my-3 w-full aspect-video max-h-[52vh] mx-auto border-2 border-indigo-500/40'
+          ? 'relative my-2 w-full flex-1 min-h-[60vh] max-h-[82vh] rounded-3xl border-2 border-indigo-500/50 transition-all'
+          : 'relative my-3 w-full aspect-video max-h-[52vh] mx-auto rounded-3xl border-2 border-indigo-500/40 transition-all'
       }`}
+      style={isFullscreen ? {
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        width: '100vw',
+        height: '100vh',
+        maxWidth: '100vw',
+        maxHeight: '100vh',
+        zIndex: 999999,
+        margin: 0,
+        padding: 0,
+        backgroundColor: '#000000'
+      } : {}}
     >
       <video
         ref={videoRef}
@@ -5467,7 +5488,7 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
       />
 
       {/* Kontrol Çubuğu */}
-      <div className="absolute top-3 left-3 right-3 flex items-center justify-between pointer-events-none z-20">
+      <div className="absolute top-4 left-4 right-4 flex items-center justify-between pointer-events-none z-30">
         {/* Canlı Yayında Rozeti */}
         <div className="flex items-center space-x-2 bg-black/85 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-white/10 pointer-events-auto shadow-lg">
           <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse" />
@@ -5581,4 +5602,10 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
       </div>
     </div>
   );
+
+  if (isFullscreen && typeof document !== 'undefined') {
+    return createPortal(playerContent, document.body);
+  }
+
+  return playerContent;
 }
