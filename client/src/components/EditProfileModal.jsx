@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { X, Camera, Trash2, Check, Copy, User, Sparkles, Sliders } from 'lucide-react';
 import UserAvatar from './UserAvatar';
+import { copyTextSafely } from '../utils/clipboard';
 
 const EMOJI_AVATARS = [
   '🎮', '⚡', '🚀', '🔥', '👾', '🎯', 
@@ -60,11 +61,13 @@ export default function EditProfileModal({ currentUser, onClose, onUpdateProfile
     }
   };
 
-  const handleCopyId = () => {
+  const handleCopyId = async () => {
     if (!currentUser?.user_code) return;
-    navigator.clipboard.writeText(currentUser.user_code);
-    setCopiedId(true);
-    setTimeout(() => setCopiedId(false), 2500);
+    const success = await copyTextSafely(currentUser.user_code);
+    if (success) {
+      setCopiedId(true);
+      setTimeout(() => setCopiedId(false), 2500);
+    }
   };
 
   const handleSubmit = async (e) => {

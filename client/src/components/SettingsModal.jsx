@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   X, Mic, Volume2, ShieldCheck, Zap, Sliders, Check, 
   VolumeX, SlidersHorizontal, Radio, Sparkles, User, AudioWaveform, Bell,
-  Camera, Image as ImageIcon, Trash2, Headphones, Upload
+  Camera, Image as ImageIcon, Trash2, Headphones, Upload, Laptop, Power
 } from 'lucide-react';
 import { webrtc } from '../services/webrtc';
 import { soundEffects } from '../services/soundEffects';
@@ -101,6 +101,44 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser, init
     setTimeout(() => {
       setIsPlayingTestSound(false);
     }, 600);
+  };
+
+  // Windows Startup (Auto-Launch) State
+  const [autoLaunch, setAutoLaunch] = useState(() => {
+    try {
+      return localStorage.getItem('turkcord_auto_launch') === 'true';
+    } catch (e) {
+      return false;
+    }
+  });
+  const [isElectron, setIsElectron] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.electronAPI) {
+      setIsElectron(true);
+      if (typeof window.electronAPI.getAutoLaunch === 'function') {
+        window.electronAPI.getAutoLaunch().then((enabled) => {
+          setAutoLaunch(Boolean(enabled));
+          try { localStorage.setItem('turkcord_auto_launch', String(Boolean(enabled))); } catch (e) {}
+        }).catch(() => {});
+      }
+    }
+  }, []);
+
+  const handleToggleAutoLaunch = async (enable) => {
+    setAutoLaunch(enable);
+    try {
+      localStorage.setItem('turkcord_auto_launch', String(enable));
+    } catch (e) {}
+
+    if (typeof window !== 'undefined' && window.electronAPI && typeof window.electronAPI.setAutoLaunch === 'function') {
+      try {
+        const res = await window.electronAPI.setAutoLaunch(enable);
+        setAutoLaunch(res);
+      } catch (err) {
+        console.warn('setAutoLaunch error:', err);
+      }
+    }
   };
 
   const avatarFileInputRef = useRef(null);
@@ -218,44 +256,57 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser, init
         </div>
 
         {/* Sekme Butonları */}
-        <div className="flex space-x-2 bg-[#0d1117] p-1.5 rounded-2xl border border-[#30363d] mb-4">
+        <div className="flex space-x-1.5 bg-[#0d1117] p-1.5 rounded-2xl border border-[#30363d] mb-4">
           <button
             type="button"
             onClick={() => setActiveTab('audio')}
-            className={`flex-1 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center space-x-2 ${
+            className={`flex-1 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center space-x-1.5 ${
               activeTab === 'audio'
                 ? 'bg-indigo-600 text-white shadow'
                 : 'text-[#7d8590] hover:text-white hover:bg-[#161b22]'
             }`}
           >
-            <Mic className="w-4 h-4" />
-            <span>Ses & Gürültü Filtresi</span>
+            <Mic className="w-3.5 h-3.5" />
+            <span>Ses & Donanım</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('profile')}
-            className={`flex-1 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center space-x-2 ${
+            className={`flex-1 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center space-x-1.5 ${
               activeTab === 'profile'
                 ? 'bg-indigo-600 text-white shadow'
                 : 'text-[#7d8590] hover:text-white hover:bg-[#161b22]'
             }`}
           >
-            <User className="w-4 h-4" />
-            <span>Kullanıcı Profili</span>
+            <User className="w-3.5 h-3.5" />
+            <span>Profil</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('system')}
+            className={`flex-1 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center space-x-1.5 ${
+              activeTab === 'system'
+                ? 'bg-indigo-600 text-white shadow'
+                : 'text-[#7d8590] hover:text-white hover:bg-[#161b22]'
+            }`}
+          >
+            <Laptop className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Sistem & Başlatma</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('engine')}
-            className={`flex-1 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center space-x-2 ${
+            className={`flex-1 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center space-x-1.5 ${
               activeTab === 'engine'
                 ? 'bg-indigo-600 text-white shadow'
                 : 'text-[#7d8590] hover:text-white hover:bg-[#161b22]'
             }`}
           >
-            <Zap className="w-4 h-4 text-amber-400" />
-            <span>eSports Motoru</span>
+            <Zap className="w-3.5 h-3.5 text-amber-400" />
+            <span>eSports</span>
           </button>
         </div>
 
@@ -762,7 +813,62 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser, init
             </div>
           )}
 
-          {/* TAB 3: ESPORTS MOTORU BİLGİSİ */}
+          {/* TAB 3: SİSTEM & BAŞLANGIÇ AYARLARI */}
+          {activeTab === 'system' && (
+            <div className="space-y-4 animate-in fade-in duration-150">
+              {/* Windows ile Başlatma Seçeneği */}
+              <div className="bg-[#21262d] p-5 rounded-2xl border border-[#30363d] space-y-3 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <div className="pr-4">
+                    <label className="text-sm font-bold text-white flex items-center space-x-2">
+                      <Laptop className="w-4 h-4 text-emerald-400" />
+                      <span>PC Açılışında Otomatik Başlat</span>
+                    </label>
+                    <p className="text-xs text-[#7d8590] mt-1 leading-relaxed">
+                      Bilgisayarınızı açtığınızda TurkCord arka planda hazır olarak otomatik açılsın.
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                    <input
+                      type="checkbox"
+                      checked={autoLaunch}
+                      onChange={(e) => handleToggleAutoLaunch(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-[#0d1117] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500 border border-[#30363d]"></div>
+                  </label>
+                </div>
+
+                <div className="pt-3 border-t border-[#30363d]/60 text-[11px] text-[#7d8590] flex items-center justify-between">
+                  <span>Açılış Durumu:</span>
+                  <span className={`font-bold font-mono px-2 py-0.5 rounded-md ${
+                    autoLaunch ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-[#0d1117] text-[#7d8590]'
+                  }`}>
+                    {autoLaunch ? '🟢 PC Açıldığında Otomatik Açılacak' : '⚪ Kapalı (Manuel Başlatma)'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Bilgisayar & Uygulama Bilgisi */}
+              <div className="bg-[#0d1117] p-4 rounded-2xl border border-[#30363d] space-y-2.5 text-xs text-[#7d8590]">
+                <div className="flex items-center justify-between">
+                  <span>Çalışma Modu:</span>
+                  <span className="text-white font-bold">{isElectron ? 'TurkCord Masaüstü (Native App)' : 'Web Tarayıcı Modu'}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>Düşük Kaynak Tüketimi (Gaming):</span>
+                  <span className="text-emerald-400 font-bold">Ultra Düşük CPU & RAM Önceliği Aktif</span>
+                </div>
+                {!isElectron && (
+                  <p className="text-[10px] text-amber-400/80 pt-1 border-t border-[#30363d]/50">
+                    ℹ️ PC açılışında otomatik başlatma ayarı TurkCord Masaüstü (.exe) uygulamasında sistem başlangıcına kaydedilir.
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 4: ESPORTS MOTORU BİLGİSİ */}
           {activeTab === 'engine' && (
             <div className="bg-[#0d1117] p-4 rounded-2xl border border-amber-500/30 space-y-2.5 text-xs text-[#7d8590] animate-in fade-in duration-150">
               <div className="flex items-center justify-between text-white font-bold pb-2 border-b border-[#30363d]">
