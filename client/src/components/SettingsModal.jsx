@@ -266,7 +266,7 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser, init
                 Ayarlar & Donanım
               </h3>
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 font-bold">
-                v1.0.14
+                v1.0.15
               </span>
             </div>
             <p className="text-xs text-[#7d8590]">
