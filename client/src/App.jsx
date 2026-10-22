@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { socket } from './services/socket';
 import { webrtc } from './services/webrtc';
 import { supabase } from './services/supabase';
@@ -163,6 +163,31 @@ export default function App() {
   const [livePing, setLivePing] = useState(12);
   const [roomEventToast, setRoomEventToast] = useState(null);
   const [joiningRoomId, setJoiningRoomId] = useState(null);
+  const [availableUpdate, setAvailableUpdate] = useState(null);
+
+  // Otomatik Guncelleme Kontrolu (GitHub Releases API)
+  useEffect(() => {
+    const checkForUpdates = async () => {
+      try {
+        const res = await fetch('https://api.github.com/repos/black3vil007-maker/TurkCord/releases/latest');
+        if (res.ok) {
+          const data = await res.json();
+          const latestTag = data.tag_name || '';
+          if (latestTag && latestTag !== APP_VERSION) {
+            const asset = data.assets && data.assets.find(a => a.name.endsWith('.exe'));
+            setAvailableUpdate({
+              version: latestTag,
+              title: data.name || latestTag,
+              downloadUrl: asset ? asset.browser_download_url : data.html_url
+            });
+          }
+        }
+      } catch (e) {}
+    };
+    checkForUpdates();
+    const updateTimer = setInterval(checkForUpdates, 15 * 60 * 1000);
+    return () => clearInterval(updateTimer);
+  }, []);
 
   // References to track room members and trigger join/leave sounds
   const voiceTransitionSeqRef = useRef(0);
@@ -2562,6 +2587,35 @@ export default function App() {
           </div>
         </div>
       </div>
+      {/* Otomatik Yeni Surum / Guncelleme Bildirim Cubugu */}
+      {availableUpdate && (
+        <div className="bg-gradient-to-r from-indigo-950 via-purple-950 to-indigo-950 border-b border-indigo-500/40 px-4 py-2 flex items-center justify-between text-xs z-50 text-white flex-shrink-0 shadow-lg animate-in slide-in-from-top-2">
+          <div className="flex items-center space-x-2.5">
+            <Sparkles className="w-4 h-4 text-amber-400 animate-pulse flex-shrink-0" />
+            <span className="font-bold text-emerald-400">Yeni Surum Mevcut:</span>
+            <span className="font-mono bg-indigo-500/30 px-2 py-0.5 rounded border border-indigo-400/40 text-amber-300 font-bold">{availableUpdate.version}</span>
+            <span className="text-[#8b949e] hidden md:inline truncate max-w-xs">({availableUpdate.title})</span>
+          </div>
+          <div className="flex items-center space-x-2 flex-shrink-0">
+            <a
+              href={availableUpdate.downloadUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-black text-[11px] transition shadow-md shadow-emerald-500/20 flex items-center space-x-1.5 transform hover:-translate-y-0.5"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Guncellemeyi Indir (.exe)</span>
+            </a>
+            <button 
+              onClick={() => setAvailableUpdate(null)} 
+              className="p-1 hover:text-white text-[#8b949e] transition hover:bg-white/10 rounded-lg"
+              title="Kapat"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-1 overflow-hidden relative">
       {/* Canlı Oda Daveti Bildirimi (Floating Toast) */}
