@@ -56,6 +56,7 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser, init
   const [isPlayingTestSound, setIsPlayingTestSound] = useState(false);
 
   useEffect(() => {
+    webrtc.resumeAudioContexts();
     let isMounted = true;
     const fetchDevices = async () => {
       try {

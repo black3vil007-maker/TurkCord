@@ -197,23 +197,28 @@ class WebRTCManager {
     try {
       const targetDevice = deviceId || this.selectedOutputDeviceId || 'default';
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return false;
       const ctx = new AudioCtx();
-      if (typeof ctx.setSinkId === 'function' && targetDevice !== 'default') {
+      await ctx.resume();
+
+      if (typeof ctx.setSinkId === 'function') {
         try {
-          await ctx.setSinkId(targetDevice);
-        } catch (e) {}
+          await ctx.setSinkId(targetDevice === 'default' ? '' : targetDevice);
+        } catch (e) {
+          try { await ctx.setSinkId(''); } catch (e2) {}
+        }
       }
 
       const now = ctx.currentTime;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
 
-      osc.type = 'sine';
+      osc.type = 'triangle';
       osc.frequency.setValueAtTime(587.33, now); // D5
       osc.frequency.setValueAtTime(880.00, now + 0.12); // A5
 
       gain.gain.setValueAtTime(0, now);
-      gain.gain.linearRampToValueAtTime(0.28, now + 0.02);
+      gain.gain.linearRampToValueAtTime(0.6, now + 0.02);
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
 
       osc.connect(gain);
@@ -224,7 +229,7 @@ class WebRTCManager {
 
       setTimeout(() => {
         ctx.close().catch(() => {});
-      }, 600);
+      }, 700);
       return true;
     } catch (err) {
       console.warn('[WebRTC] testOutputDevice error:', err);
@@ -353,14 +358,17 @@ class WebRTCManager {
     }
 
     // Apply selected output device sinkId if supported
-    if (this.selectedOutputDeviceId && this.selectedOutputDeviceId !== 'default' && typeof audioEl.setSinkId === 'function') {
-      audioEl.setSinkId(this.selectedOutputDeviceId).catch(() => {});
+    if (typeof audioEl.setSinkId === 'function') {
+      const sink = (this.selectedOutputDeviceId && this.selectedOutputDeviceId !== 'default') 
+        ? this.selectedOutputDeviceId 
+        : '';
+      audioEl.setSinkId(sink).catch(() => {
+        audioEl.setSinkId('').catch(() => {});
+      });
     }
 
-    // 2. Set stream directly
-    if (audioEl.srcObject !== remoteStream) {
-      audioEl.srcObject = remoteStream;
-    }
+    // 2. Set stream directly to guarantee immediate playback binding
+    audioEl.srcObject = remoteStream;
 
     // 3. Audio volume & unmuted - Never mute unless user is intentionally deafened!
     const effectiveVol = this.getEffectivePeerVolume(peerId);
@@ -548,7 +556,7 @@ class WebRTCManager {
     const opusMatch = sdp.match(/a=rtpmap:(\d+)\s+opus\/48000/i);
     if (opusMatch) {
       const opusPayload = opusMatch[1];
-      const gamingParams = 'maxaveragebitrate=64000;stereo=1;sprop-stereo=1;useinbandfec=1;usedtx=0';
+      const gamingParams = 'maxaveragebitrate=64000;useinbandfec=1;usedtx=0';
 
       const fmtpRegex = new RegExp(`a=fmtp:${opusPayload}\\s+(.*)`, 'i');
       if (fmtpRegex.test(sdp)) {
@@ -570,23 +578,9 @@ class WebRTCManager {
     return sdp;
   }
 
-  // Optimize RTCPeerConnection for real-time playout without artificial jitter buffering
+  // Optimize RTCPeerConnection for real-time playout
   optimizePeer(pc) {
-    // 1. Receivers: minimize jitter buffer and playout delay to zero
-    if (pc.getReceivers) {
-      pc.getReceivers().forEach(receiver => {
-        if (receiver.track && receiver.track.kind === 'audio') {
-          if ('playoutDelayHint' in receiver) {
-            receiver.playoutDelayHint = 0; // Ultra low-latency playback
-          }
-          if ('jitterBufferDelayHint' in receiver) {
-            receiver.jitterBufferDelayHint = 0; // Zero artificial buffering
-          }
-        }
-      });
-    }
-
-    // 2. Senders: set high network priority and target bitrate
+    // Senders: set high network priority and target bitrate
     if (pc.getSenders) {
       pc.getSenders().forEach(sender => {
         if (sender.track && sender.track.kind === 'audio') {
@@ -743,8 +737,9 @@ class WebRTCManager {
       }
 
       // If audio track, ensure native audio element playback
-      if ((event.track && event.track.kind === 'audio') || remoteStream.getAudioTracks().length > 0) {
-        this.setupPeerAudio(peerId, remoteStream);
+      const streamToPlay = (event.streams && event.streams[0]) ? event.streams[0] : remoteStream;
+      if ((event.track && event.track.kind === 'audio') || streamToPlay.getAudioTracks().length > 0) {
+        this.setupPeerAudio(peerId, streamToPlay);
       }
 
       this.optimizePeer(pc);
