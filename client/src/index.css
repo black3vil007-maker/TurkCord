@@ -55,3 +55,16 @@
 .titlebar-no-drag {
   -webkit-app-region: no-drag;
 }
+
+/* Ensure inputs, textareas & controls in Electron & Web are always clickable, focusable, and selectable */
+input, textarea, select, [contenteditable="true"] {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  -webkit-app-region: no-drag !important;
+  cursor: text !important;
+  pointer-events: auto !important;
+}
+
+button {
+  -webkit-app-region: no-drag !important;
+}

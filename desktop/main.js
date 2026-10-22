@@ -1,4 +1,4 @@
-const { app, BrowserWindow, session, desktopCapturer, shell, ipcMain, clipboard } = require('electron');
+const { app, BrowserWindow, session, desktopCapturer, shell, ipcMain, clipboard, Menu } = require('electron');
 const path = require('path');
 const http = require('http');
 const https = require('https');
@@ -44,6 +44,36 @@ if (!gotTheLock) {
         webSecurity: true
       }
     });
+
+    // Standard Edit & View menu for flawless native text input & shortcuts
+    const editMenuTemplate = [
+      {
+        label: 'Edit',
+        submenu: [
+          { role: 'undo' },
+          { role: 'redo' },
+          { type: 'separator' },
+          { role: 'cut' },
+          { role: 'copy' },
+          { role: 'paste' },
+          { role: 'delete' },
+          { role: 'selectAll' }
+        ]
+      },
+      {
+        label: 'View',
+        submenu: [
+          { role: 'reload' },
+          { role: 'forceReload' },
+          { role: 'toggleDevTools' },
+          { type: 'separator' },
+          { role: 'resetZoom' },
+          { role: 'zoomIn' },
+          { role: 'zoomOut' }
+        ]
+      }
+    ];
+    Menu.setApplicationMenu(Menu.buildFromTemplate(editMenuTemplate));
 
     // Permission handler for Microphone, Audio & Screen Capture
     session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {

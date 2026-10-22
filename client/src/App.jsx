@@ -202,6 +202,14 @@ export default function App() {
     } catch (e) {}
   };
 
+  const cloudStoreDebounceRef = useRef(null);
+  const debounceLoadCloudStore = (delay = 350) => {
+    if (cloudStoreDebounceRef.current) clearTimeout(cloudStoreDebounceRef.current);
+    cloudStoreDebounceRef.current = setTimeout(() => {
+      loadCloudStore();
+    }, delay);
+  };
+
   // Supabase Cloud Chat Store (Synced globally for all channels and all users across all platforms)
   const loadCloudStore = async () => {
     try {
@@ -600,9 +608,12 @@ export default function App() {
     return Array.from(map.values());
   };
 
-  // Güvenlik Önlemi: Sağ tık (contextmenu) ve inceleme kısayollarını engelle
+  // Güvenlik Önlemi: Sağ tık (contextmenu) ve inceleme kısayollarını engelle (metin kutularında kopyala/yapıştır serbest)
   useEffect(() => {
     const handleContextMenu = (e) => {
+      if (e.target?.closest('input, textarea, select, [contenteditable="true"], .select-text')) {
+        return true;
+      }
       e.preventDefault();
       return false;
     };
@@ -917,9 +928,13 @@ export default function App() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'voice_rooms' },
-        () => {
+        (payload) => {
+          // If this was an update to voice-lobi's chat JSON store, do NOT reload voice rooms!
+          if (payload.new?.id === 'voice-lobi' && payload.eventType === 'UPDATE') {
+            debounceLoadCloudStore();
+            return;
+          }
           loadVoiceRooms();
-          loadCloudStore();
         }
       )
       .subscribe();
@@ -930,7 +945,7 @@ export default function App() {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'messages' },
         () => {
-          loadCloudStore();
+          debounceLoadCloudStore();
         }
       )
       .subscribe();
@@ -2001,7 +2016,7 @@ export default function App() {
   };
 
   const handleDeleteChatMessage = (channelId, messageId) => {
-    if (!confirm('Bu mesajı kalıcı olarak silmek istediğinizden emin misiniz?')) return;
+    // Instant silky-smooth local removal (no thread-blocking confirm freeze)
     handleDeleteIncomingMessage(channelId, messageId);
 
     // Broadcast delete globally to all peers
@@ -2011,7 +2026,7 @@ export default function App() {
       socket.emit('chat:delete', { channelId, messageId });
     }
 
-    // Delete from Supabase Cloud Chat Store
+    // Delete from Supabase Cloud Chat Store asynchronously in background
     syncDeleteFromCloudStore(channelId, messageId);
   };
 
@@ -2415,7 +2430,10 @@ export default function App() {
 
   return (
     <div 
-      onContextMenu={(e) => e.preventDefault()} 
+      onContextMenu={(e) => {
+        if (e.target?.closest('input, textarea, select, [contenteditable="true"], .select-text')) return;
+        e.preventDefault();
+      }} 
       className="flex flex-col h-screen w-screen overflow-hidden bg-[#0d1117] text-[#e6edf3] font-sans antialiased relative select-none"
     >
       {/* Discord Tarzı Yerleşik Windows Başlık Çubuğu */}
@@ -4511,7 +4529,7 @@ function CleanChatView({
       </div>
 
       {/* Mesaj Giriş Alanı */}
-      <div className="bg-[#161b22] border-t border-[#30363d] p-3 sm:p-4 relative">
+      <div className="bg-[#161b22] border-t border-[#30363d] p-3 sm:p-4 relative flex-shrink-0 z-20 select-text">
         {/* Yüklenmek Üzere Olan Görsel Önizleme Barı */}
         {pendingImage && (
           <div className="mb-2 p-2 rounded-2xl bg-[#0d1117] border border-indigo-500/50 flex items-center justify-between animate-in fade-in">
@@ -4653,7 +4671,7 @@ function CleanChatView({
                 }
               }}
               placeholder="📢 Güncelleme notlarını buraya madde madde yazın... (Enter ile alt satıra geçebilirsiniz)&#10;Örnek:&#10;🚀 TurkCord v1.0.8 Güncellemesi:&#10;• Şifreli odalar için güvenlik artırıldı.&#10;• Ses kalitesi 10ms Opus'a optimize edildi."
-              className="w-full bg-[#161b22] border border-[#30363d] focus:border-indigo-400 rounded-xl p-3 text-sm text-white font-medium outline-none transition resize-y min-h-[90px] max-h-[300px] leading-relaxed shadow-inner"
+              className="w-full bg-[#161b22] border border-[#30363d] focus:border-indigo-400 rounded-xl p-3 text-sm text-white font-medium outline-none transition resize-y min-h-[90px] max-h-[300px] leading-relaxed shadow-inner select-text cursor-text pointer-events-auto"
             />
 
             {/* Alt Eylemler */}
@@ -4744,7 +4762,7 @@ function CleanChatView({
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               placeholder={`#${channel?.name || 'sohbet'} kanalına yaz veya fotoğraf yapıştır...`}
-              className="flex-1 bg-[#0d1117] border border-[#30363d] focus:border-indigo-500 rounded-xl px-4 py-3 text-sm text-white outline-none transition font-medium"
+              className="flex-1 bg-[#0d1117] border border-[#30363d] focus:border-indigo-500 rounded-xl px-4 py-3 text-sm text-white outline-none transition font-medium select-text cursor-text pointer-events-auto"
             />
 
             {/* Gönder Butonu */}
