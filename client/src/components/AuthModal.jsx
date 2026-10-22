@@ -1,14 +1,34 @@
 import React, { useState } from 'react';
 import { supabase } from '../services/supabase';
-import { Mail, Lock, User, ArrowRight, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Mail, Lock, User, ArrowRight, CheckCircle2, AlertCircle, Eye, EyeOff } from 'lucide-react';
 import TurkCordLogo from './TurkCordLogo';
 
 const AVATARS = ['🎮', '⚡', '🚀', '🔥', '👾', '🎯', '🐱', '🦊', '🐉', '🎧', '🕹️', '🍕'];
 
 export default function AuthModal({ onAuthSuccess }) {
   const [mode, setMode] = useState('login'); // 'login', 'register', 'confirmed_notice'
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(() => {
+    try {
+      return localStorage.getItem('turkcord_remember_me') !== 'false';
+    } catch (e) {
+      return true;
+    }
+  });
+  const [email, setEmail] = useState(() => {
+    try {
+      return localStorage.getItem('turkcord_saved_email') || '';
+    } catch (e) {
+      return '';
+    }
+  });
+  const [password, setPassword] = useState(() => {
+    try {
+      return localStorage.getItem('turkcord_saved_password') || '';
+    } catch (e) {
+      return '';
+    }
+  });
+  const [showPassword, setShowPassword] = useState(false);
   const [username, setUsername] = useState('');
   const [avatar, setAvatar] = useState('🎮');
   const [loading, setLoading] = useState(false);
@@ -61,6 +81,21 @@ export default function AuthModal({ onAuthSuccess }) {
       if (!userCode) {
         userCode = Math.floor(1000000000 + Math.random() * 9000000000).toString();
         await supabase.from('profiles').update({ user_code: userCode }).eq('id', data.user.id);
+      }
+
+      // Save or clear credentials based on Remember Me preference
+      if (rememberMe) {
+        try {
+          localStorage.setItem('turkcord_remember_me', 'true');
+          localStorage.setItem('turkcord_saved_email', email.trim());
+          localStorage.setItem('turkcord_saved_password', password);
+        } catch (e) {}
+      } else {
+        try {
+          localStorage.setItem('turkcord_remember_me', 'false');
+          localStorage.removeItem('turkcord_saved_email');
+          localStorage.removeItem('turkcord_saved_password');
+        } catch (e) {}
       }
 
       onAuthSuccess({
@@ -130,7 +165,22 @@ export default function AuthModal({ onAuthSuccess }) {
           .eq('id', data.user.id)
           .single();
 
-        onAuthSuccess({
+        // Save or clear credentials based on Remember Me preference
+      if (rememberMe) {
+        try {
+          localStorage.setItem('turkcord_remember_me', 'true');
+          localStorage.setItem('turkcord_saved_email', email.trim());
+          localStorage.setItem('turkcord_saved_password', password);
+        } catch (e) {}
+      } else {
+        try {
+          localStorage.setItem('turkcord_remember_me', 'false');
+          localStorage.removeItem('turkcord_saved_email');
+          localStorage.removeItem('turkcord_saved_password');
+        } catch (e) {}
+      }
+
+      onAuthSuccess({
           id: data.user.id,
           email: data.user.email,
           username: profile?.username || username.trim(),
@@ -276,16 +326,40 @@ export default function AuthModal({ onAuthSuccess }) {
                 <div className="relative">
                   <Lock className="w-4 h-4 text-[#7d8590] absolute left-3.5 top-3" />
                   <input
-                    type="password"
+                    type={showPassword ? 'text' : 'password'}
                     required
                     minLength={6}
                     placeholder="En az 6 karakter"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="w-full bg-[#0d1117] border border-[#30363d] focus:border-indigo-500 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white outline-none transition font-medium"
+                    className="w-full bg-[#0d1117] border border-[#30363d] focus:border-indigo-500 rounded-xl pl-10 pr-10 py-2.5 text-sm text-white outline-none transition font-medium"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-3 text-[#7d8590] hover:text-white transition"
+                    title={showPassword ? 'Şifreyi Gizle' : 'Şifreyi Göster'}
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
               </div>
+
+              {mode === 'login' && (
+                <div className="flex items-center justify-between pt-0.5">
+                  <label className="flex items-center space-x-2 cursor-pointer group select-none">
+                    <input
+                      type="checkbox"
+                      checked={rememberMe}
+                      onChange={(e) => setRememberMe(e.target.checked)}
+                      className="w-4 h-4 rounded border-[#30363d] bg-[#0d1117] text-indigo-600 focus:ring-indigo-500 focus:ring-offset-0 cursor-pointer accent-indigo-600"
+                    />
+                    <span className="text-xs text-[#c9d1d9] group-hover:text-white transition font-medium">
+                      Beni Hatırla (Şifreyi Kaydet)
+                    </span>
+                  </label>
+                </div>
+              )}
 
               <button
                 type="submit"
