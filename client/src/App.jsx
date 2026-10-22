@@ -164,6 +164,31 @@ export default function App() {
   const [roomEventToast, setRoomEventToast] = useState(null);
   const [joiningRoomId, setJoiningRoomId] = useState(null);
   const [availableUpdate, setAvailableUpdate] = useState(null);
+  const [updateProgress, setUpdateProgress] = useState(null);
+
+  useEffect(() => {
+    if (window.electronAPI && typeof window.electronAPI.onUpdateProgress === 'function') {
+      return window.electronAPI.onUpdateProgress((percent) => {
+        setUpdateProgress(percent);
+      });
+    }
+  }, []);
+
+  const handleStartAutoUpdate = async () => {
+    if (!availableUpdate || !availableUpdate.downloadUrl) return;
+    if (window.electronAPI && typeof window.electronAPI.installUpdate === 'function') {
+      setUpdateProgress(1);
+      try {
+        await window.electronAPI.installUpdate(availableUpdate.downloadUrl);
+      } catch (err) {
+        console.error('Update failed:', err);
+        setUpdateProgress(null);
+        window.open(availableUpdate.downloadUrl, '_blank');
+      }
+    } else {
+      window.open(availableUpdate.downloadUrl, '_blank');
+    }
+  };
 
   // Otomatik Guncelleme Kontrolu (GitHub Releases API)
   useEffect(() => {
@@ -2603,15 +2628,21 @@ export default function App() {
             <span className="text-[#8b949e] hidden md:inline truncate max-w-xs">({availableUpdate.title})</span>
           </div>
           <div className="flex items-center space-x-2 flex-shrink-0">
-            <a
-              href={availableUpdate.downloadUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="px-3 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-black text-[11px] transition shadow-md shadow-emerald-500/20 flex items-center space-x-1.5 transform hover:-translate-y-0.5"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Guncellemeyi Indir (.exe)</span>
-            </a>
+            {updateProgress !== null ? (
+              <div className="flex items-center space-x-2 px-3.5 py-1.5 rounded-lg bg-indigo-600/60 border border-indigo-400 text-white font-bold text-[11px] shadow">
+                <span className="w-3.5 h-3.5 rounded-full border-2 border-emerald-400 border-t-transparent animate-spin"></span>
+                <span>{updateProgress >= 100 ? 'Kuruluyor, yeniden başlatılıyor...' : `İndiriliyor %${updateProgress}`}</span>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleStartAutoUpdate}
+                className="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-black text-[11px] transition shadow-md shadow-emerald-500/20 flex items-center space-x-1.5 transform hover:-translate-y-0.5 active:scale-95 cursor-pointer"
+              >
+                <Zap className="w-3.5 h-3.5 fill-black" />
+                <span>Tek Tıkla Otomatik Güncelle</span>
+              </button>
+            )}
             <button 
               onClick={() => setAvailableUpdate(null)} 
               className="p-1 hover:text-white text-[#8b949e] transition hover:bg-white/10 rounded-lg"

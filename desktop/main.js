@@ -2,6 +2,8 @@ const { app, BrowserWindow, session, desktopCapturer, shell, ipcMain, clipboard,
 const path = require('path');
 const http = require('http');
 const https = require('https');
+const { spawn } = require('child_process');
+const fs = require('fs');
 
 // Ultra-Low RAM & Gaming Latency Chromium Switches
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=160');
@@ -131,9 +133,15 @@ if (!gotTheLock) {
       }
     });
 
+    // DISCORD-STYLE LIVE AUTO-SYNC ARCHITECTURE:
+    // 1. Local development server (http://localhost:3000)
+    // 2. Live Cloud production (https://black3vil007-maker.github.io/TurkCord/)
+    // 3. Bundled offline app files (app/index.html)
+    const localDevServer = 'http://localhost:3000';
+    const cloudProductionServer = 'https://black3vil007-maker.github.io/TurkCord/';
     const appHtml = path.join(__dirname, 'app', 'index.html');
 
-    const checkServer = (targetUrl, timeoutMs = 800) => {
+    const checkServer = (targetUrl, timeoutMs = 1500) => {
       return new Promise((resolve) => {
         try {
           const client = targetUrl.startsWith('https:') ? https : http;
@@ -156,18 +164,26 @@ if (!gotTheLock) {
     };
 
     async function initializeApp() {
-      // Only in local development mode check localhost
+      // 1. In dev mode, check localhost
       if (!app.isPackaged) {
-        const hasLocalDev = await checkServer('http://localhost:3000', 500);
+        const hasLocalDev = await checkServer(localDevServer, 500);
         if (hasLocalDev) {
-          console.log('[TurkCord Desktop] Dev mode: connected to localhost:3000');
-          mainWindow.loadURL('http://localhost:3000');
+          console.log('[TurkCord Desktop] Connected to local dev:', localDevServer);
+          mainWindow.loadURL(localDevServer);
           return;
         }
       }
 
-      // Installed production app ALWAYS runs bundled local offline files
-      console.log('[TurkCord Desktop] Loading bundled local app:', appHtml);
+      // 2. Live Cloud Server: pulls latest updates instantly upon opening or Ctrl+R!
+      const hasCloudProduction = await checkServer(cloudProductionServer, 2000);
+      if (hasCloudProduction) {
+        console.log('[TurkCord Desktop] Auto-sync connected to live cloud:', cloudProductionServer);
+        mainWindow.loadURL(cloudProductionServer);
+        return;
+      }
+
+      // 3. Offline fallback to bundled app
+      console.log('[TurkCord Desktop] Offline fallback to bundled local app:', appHtml);
       mainWindow.loadFile(appHtml);
     }
 
@@ -230,6 +246,66 @@ if (!gotTheLock) {
       console.warn('[IPC] Error setting auto-launch:', e);
       return false;
     }
+  });
+
+  // Automatic 1-Click Silent Update Installer
+  ipcMain.handle('app:auto-update-install', async (event, downloadUrl) => {
+    return new Promise((resolve, reject) => {
+      try {
+        const tempPath = path.join(app.getPath('temp'), 'TurkCord-Update.exe');
+        const file = fs.createWriteStream(tempPath);
+        
+        const download = (targetUrl) => {
+          const client = targetUrl.startsWith('https:') ? https : http;
+          client.get(targetUrl, (res) => {
+            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+              return download(res.headers.location);
+            }
+            if (res.statusCode !== 200) {
+              return reject(new Error('Download failed: ' + res.statusCode));
+            }
+            
+            const total = parseInt(res.headers['content-length'] || '0', 10);
+            let received = 0;
+            
+            res.on('data', (chunk) => {
+              received += chunk.length;
+              if (total > 0 && mainWindow && !mainWindow.isDestroyed()) {
+                const percent = Math.round((received / total) * 100);
+                mainWindow.webContents.send('app:update-progress', percent);
+              }
+            });
+            
+            res.pipe(file);
+            
+            file.on('finish', () => {
+              file.close(() => {
+                try {
+                  // Execute silent update without asking user for prompts
+                  spawn(tempPath, ['/S'], {
+                    detached: true,
+                    stdio: 'ignore'
+                  }).unref();
+                  setTimeout(() => {
+                    app.quit();
+                  }, 600);
+                  resolve({ success: true });
+                } catch (spawnErr) {
+                  reject(spawnErr);
+                }
+              });
+            });
+          }).on('error', (err) => {
+            fs.unlink(tempPath, () => {});
+            reject(err);
+          });
+        };
+        
+        download(downloadUrl);
+      } catch (e) {
+        reject(e);
+      }
+    });
   });
 
   // Native Native Clipboard Writer (Guarantees 100% reliable copy on desktop)
