@@ -143,10 +143,10 @@ if (!gotTheLock) {
       return { action: 'deny' };
     });
 
-    // Allow Ctrl+R or F5 to reload current page
+    // Allow Ctrl+R or F5 to reload current page bypassing cache
     mainWindow.webContents.on('before-input-event', (event, input) => {
       if ((input.control && input.key.toLowerCase() === 'r') || input.key === 'F5') {
-        mainWindow.reload();
+        mainWindow.webContents.reloadIgnoringCache();
       }
     });
 
@@ -195,7 +195,9 @@ if (!gotTheLock) {
       const hasCloudProduction = await checkServer(cloudProductionServer, 2000);
       if (hasCloudProduction) {
         console.log('[TurkCord Desktop] Auto-sync connected to live cloud:', cloudProductionServer);
-        mainWindow.loadURL(cloudProductionServer);
+        mainWindow.loadURL(cloudProductionServer, {
+          extraHeaders: 'pragma: no-cache\ncache-control: no-cache\n'
+        });
         return;
       }
 
