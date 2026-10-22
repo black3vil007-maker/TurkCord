@@ -202,7 +202,100 @@ export default function App() {
     } catch (e) {}
   };
 
-  // Persistent Chat Log: Load from LocalStorage instantly & sync with Supabase channel_messages
+  // Supabase Cloud Chat Store (Synced globally for all channels and all users across all platforms)
+  const loadCloudStore = async () => {
+    try {
+      const { data } = await supabase
+        .from('voice_rooms')
+        .select('password')
+        .eq('id', 'voice-lobi')
+        .maybeSingle();
+
+      if (data && data.password) {
+        try {
+          const store = JSON.parse(data.password);
+          if (store && typeof store === 'object') {
+            setMessages(prev => {
+              const next = { ...prev };
+              for (const [chId, msgs] of Object.entries(store)) {
+                const existing = next[chId] || [];
+                const map = new Map();
+                existing.forEach(m => map.set(m.id, m));
+                (msgs || []).forEach(m => map.set(m.id, m));
+                next[chId] = Array.from(map.values()).sort(
+                  (a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime()
+                );
+                saveCachedMessages(chId, next[chId]);
+              }
+              return next;
+            });
+          }
+        } catch (e) {}
+      }
+    } catch (err) {
+      console.warn('[Cloud Store] Fetch error:', err);
+    }
+  };
+
+  const syncMessageToCloudStore = async (newMsg) => {
+    if (!newMsg || !newMsg.channelId) return;
+    try {
+      const { data } = await supabase
+        .from('voice_rooms')
+        .select('password')
+        .eq('id', 'voice-lobi')
+        .maybeSingle();
+
+      let store = {};
+      if (data && data.password) {
+        try {
+          store = JSON.parse(data.password) || {};
+        } catch (e) {}
+      }
+
+      const chanMsgs = store[newMsg.channelId] || [];
+      if (!chanMsgs.some(m => m.id === newMsg.id)) {
+        chanMsgs.push(newMsg);
+        if (chanMsgs.length > 500) chanMsgs.shift();
+        store[newMsg.channelId] = chanMsgs;
+
+        await supabase
+          .from('voice_rooms')
+          .update({ password: JSON.stringify(store) })
+          .eq('id', 'voice-lobi');
+      }
+    } catch (err) {
+      console.warn('[Cloud Store] Sync error:', err);
+    }
+  };
+
+  const syncDeleteFromCloudStore = async (channelId, messageId) => {
+    if (!channelId || !messageId) return;
+    try {
+      const { data } = await supabase
+        .from('voice_rooms')
+        .select('password')
+        .eq('id', 'voice-lobi')
+        .maybeSingle();
+
+      if (data && data.password) {
+        try {
+          let store = JSON.parse(data.password) || {};
+          if (store[channelId]) {
+            store[channelId] = store[channelId].filter(m => m.id !== messageId);
+            await supabase
+              .from('voice_rooms')
+              .update({ password: JSON.stringify(store) })
+              .eq('id', 'voice-lobi');
+          }
+        } catch (e) {}
+      }
+    } catch (err) {
+      console.warn('[Cloud Store] Delete error:', err);
+    }
+  };
+
+  // Persistent Chat Log: Load from LocalStorage instantly & sync with Supabase Cloud Chat Store
   useEffect(() => {
     if (!activeTextChannel) return;
 
@@ -224,51 +317,8 @@ export default function App() {
       });
     }
 
-    // 2. Fetch persistent log from Supabase database
-    const fetchCloudMessages = async () => {
-      try {
-        const { data, error } = await supabase
-          .from('channel_messages')
-          .select('*')
-          .eq('channel_id', activeTextChannel)
-          .order('created_at', { ascending: true })
-          .limit(200);
-
-        if (!error && Array.isArray(data)) {
-          const formatted = data.map(row => ({
-            id: row.id,
-            channelId: row.channel_id,
-            sender: {
-              id: row.sender_id,
-              username: row.sender_username || 'Oyuncu',
-              avatar: row.sender_avatar || '🎮'
-            },
-            text: row.text,
-            image: row.image,
-            timestamp: row.created_at
-          }));
-
-          setMessages(prev => {
-            const currentMsgs = prev[activeTextChannel] || [];
-            const map = new Map();
-            currentMsgs.forEach(m => map.set(m.id, m));
-            formatted.forEach(m => map.set(m.id, m));
-            const merged = Array.from(map.values()).sort(
-              (a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime()
-            );
-            saveCachedMessages(activeTextChannel, merged);
-            return {
-              ...prev,
-              [activeTextChannel]: merged
-            };
-          });
-        }
-      } catch (err) {
-        console.warn('[Chat Log] Cloud fetch notice:', err);
-      }
-    };
-
-    fetchCloudMessages();
+    // 2. Fetch persistent log from Supabase Cloud Chat Store
+    loadCloudStore();
   }, [activeTextChannel]);
 
   // Unified incoming chat message handler with strict duplicate prevention & persistent log saving
@@ -400,6 +450,18 @@ export default function App() {
   };
 
   const parseRoomData = (r) => {
+    // voice-lobi, voice-oyun-1, voice-oyun-2 are default public rooms without password (their password field in Supabase is used as system cloud sync store)
+    if (r.id === 'voice-lobi' || r.id === 'voice-oyun-1' || r.id === 'voice-oyun-2') {
+      return {
+        id: r.id,
+        name: r.name || 'Lobi',
+        limit: parseInt(r.limit_count || r.limit || 10, 10),
+        created_by: null,
+        password: null,
+        hasPassword: false
+      };
+    }
+
     let name = r.name || 'Ses Odası';
     let password = r.password || null;
 
@@ -1134,9 +1196,11 @@ export default function App() {
     };
 
     realtimeSignaling.onChatMessage = (newMsg) => {
-      // If socket is active, socket handles chat delivery to avoid duplicate messages across networks
-      if (socket && socket.connected) return;
       handleIncomingChatMessage(newMsg);
+    };
+
+    realtimeSignaling.onChatDelete = (channelId, messageId) => {
+      handleDeleteIncomingMessage(channelId, messageId);
     };
 
     realtimeSignaling.onChatClear = (channelId) => {
@@ -1771,33 +1835,21 @@ export default function App() {
       sender: {
         id: currentUser?.id,
         username: currentUser?.username || 'Oyuncu',
-        avatar: currentUser?.avatar || '🎮'
+        avatar: currentUser?.avatar || '🎮',
+        isAdmin: Boolean(isAdmin)
       },
       text: trimmedText,
       image: image || null,
       timestamp: new Date().toISOString()
     };
 
-    // Optimistically add to UI with deduplication guard & save to persistent cache
+    // 1. Optimistically add to UI with deduplication guard & save to persistent cache
     handleIncomingChatMessage(newMsg);
 
-    // Save to Supabase channel_messages database table
-    try {
-      supabase.from('channel_messages').insert({
-        id: msgId,
-        channel_id: activeTextChannel,
-        sender_id: currentUser?.id || null,
-        sender_username: currentUser?.username || 'Oyuncu',
-        sender_avatar: currentUser?.avatar || '🎮',
-        text: trimmedText,
-        image: image || null,
-        created_at: newMsg.timestamp
-      }).then(({ error }) => {
-        if (error) console.warn('[Chat Log] Cloud message insert notice:', error.message);
-      });
-    } catch (e) {}
+    // 2. Transmit to network: ALWAYS broadcast globally via Supabase Realtime (reaches all users on all PCs)
+    realtimeSignaling.sendChatMessage(newMsg);
 
-    // Transmit to network (Single Source of Truth)
+    // 3. Also transmit to local socket if running
     if (socket && socket.connected) {
       socket.emit('chat:message', {
         id: msgId,
@@ -1805,9 +1857,10 @@ export default function App() {
         text: trimmedText,
         image: image || null
       });
-    } else {
-      realtimeSignaling.sendChatMessage(newMsg);
     }
+
+    // 4. Save to Supabase Cloud Chat Store in background (persists across refreshes and restarts)
+    syncMessageToCloudStore(newMsg);
   };
 
   const handleClearChatHistory = (channelId) => {
@@ -1822,15 +1875,29 @@ export default function App() {
       localStorage.removeItem(`turkcord_chat_log_${channelId}`);
     } catch (e) {}
 
-    // Delete from Supabase
-    try {
-      supabase.from('channel_messages').delete().eq('channel_id', channelId).then(() => {});
-    } catch (e) {}
-
     realtimeSignaling.sendChatClear(channelId);
     if (socket && socket.connected) {
       socket.emit('chat:clear', { channelId });
     }
+
+    // Clear from Cloud Store
+    (async () => {
+      try {
+        const { data } = await supabase
+          .from('voice_rooms')
+          .select('password')
+          .eq('id', 'voice-lobi')
+          .maybeSingle();
+        if (data && data.password) {
+          let store = JSON.parse(data.password) || {};
+          store[channelId] = [];
+          await supabase
+            .from('voice_rooms')
+            .update({ password: JSON.stringify(store) })
+            .eq('id', 'voice-lobi');
+        }
+      } catch (e) {}
+    })();
   };
 
   const handleDeleteIncomingMessage = (channelId, messageId) => {
@@ -1849,9 +1916,16 @@ export default function App() {
   const handleDeleteChatMessage = (channelId, messageId) => {
     if (!confirm('Bu mesajı kalıcı olarak silmek istediğinizden emin misiniz?')) return;
     handleDeleteIncomingMessage(channelId, messageId);
+
+    // Broadcast delete globally to all peers
+    realtimeSignaling.sendChatDelete(channelId, messageId);
+
     if (socket && socket.connected) {
       socket.emit('chat:delete', { channelId, messageId });
     }
+
+    // Delete from Supabase Cloud Chat Store
+    syncDeleteFromCloudStore(channelId, messageId);
   };
 
   const handleCreateTextChannel = (e) => {

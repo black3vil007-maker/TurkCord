@@ -10,6 +10,7 @@ class RealtimeSignaling {
     this.onCandidate = null; // (fromId, candidate) => void
     this.onSpeaking = null; // (fromId, isSpeaking) => void
     this.onChatMessage = null; // (message) => void
+    this.onChatDelete = null; // (channelId, messageId) => void
     this.onChatClear = null; // (channelId) => void
     this.onRoomUpdated = null; // (room) => void
     this.onRoomDeleted = null; // (roomId) => void
@@ -71,6 +72,12 @@ class RealtimeSignaling {
     this.channel.on('broadcast', { event: 'chat:message' }, ({ payload }) => {
       if (payload && this.onChatMessage) {
         this.onChatMessage(payload);
+      }
+    });
+
+    this.channel.on('broadcast', { event: 'chat:delete' }, ({ payload }) => {
+      if (payload && this.onChatDelete) {
+        this.onChatDelete(payload.channelId, payload.messageId);
       }
     });
 
@@ -234,6 +241,15 @@ class RealtimeSignaling {
       type: 'broadcast',
       event: 'chat:message',
       payload: message
+    });
+  }
+
+  sendChatDelete(channelId, messageId) {
+    if (!this.channel) return;
+    this.channel.send({
+      type: 'broadcast',
+      event: 'chat:delete',
+      payload: { channelId, messageId }
     });
   }
 
