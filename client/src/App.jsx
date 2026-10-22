@@ -205,6 +205,53 @@ export default function App() {
   // Supabase Cloud Chat Store (Synced globally for all channels and all users across all platforms)
   const loadCloudStore = async () => {
     try {
+      let loadedFromDedicatedTable = false;
+
+      // 1. Try reading from dedicated 'messages' table if user created it in Supabase
+      try {
+        const { data: dbMessages, error: msgErr } = await supabase
+          .from('messages')
+          .select('*')
+          .order('created_at', { ascending: true })
+          .limit(1000);
+
+        if (!msgErr && Array.isArray(dbMessages) && dbMessages.length > 0) {
+          loadedFromDedicatedTable = true;
+          setMessages(prev => {
+            const next = { ...prev };
+            for (const row of dbMessages) {
+              const chId = row.channel_id;
+              if (!chId) continue;
+              if (!next[chId]) next[chId] = [];
+              const msgObj = {
+                id: row.id,
+                channelId: chId,
+                sender: {
+                  id: row.sender_id,
+                  username: row.sender_username,
+                  avatar: row.sender_avatar,
+                  role: row.sender_role
+                },
+                text: row.text,
+                image: row.image,
+                timestamp: row.created_at
+              };
+              if (!next[chId].some(m => m.id === msgObj.id)) {
+                next[chId].push(msgObj);
+              }
+            }
+            for (const chId of Object.keys(next)) {
+              next[chId].sort((a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime());
+              saveCachedMessages(chId, next[chId]);
+            }
+            return next;
+          });
+        }
+      } catch (e) {
+        // 'messages' table might not be created yet in Supabase
+      }
+
+      // 2. Also read from voice_rooms fallback (where existing chat logs are stored)
       const { data } = await supabase
         .from('voice_rooms')
         .select('password')
@@ -240,6 +287,22 @@ export default function App() {
   const syncMessageToCloudStore = async (newMsg) => {
     if (!newMsg || !newMsg.channelId) return;
     try {
+      // 1. Try to persist into dedicated 'messages' table if it exists
+      try {
+        await supabase.from('messages').upsert({
+          id: newMsg.id,
+          channel_id: newMsg.channelId,
+          sender_id: newMsg.sender?.id || null,
+          sender_username: newMsg.sender?.username || 'Anonim',
+          sender_avatar: newMsg.sender?.avatar || null,
+          sender_role: newMsg.sender?.role || null,
+          text: newMsg.text || '',
+          image: newMsg.image || null,
+          created_at: newMsg.timestamp || new Date().toISOString()
+        });
+      } catch (e) {}
+
+      // 2. Also persist into voice_rooms fallback
       const { data } = await supabase
         .from('voice_rooms')
         .select('password')
@@ -272,6 +335,12 @@ export default function App() {
   const syncDeleteFromCloudStore = async (channelId, messageId) => {
     if (!channelId || !messageId) return;
     try {
+      // 1. Delete from dedicated 'messages' table if exists
+      try {
+        await supabase.from('messages').delete().eq('id', messageId);
+      } catch (e) {}
+
+      // 2. Delete from voice_rooms fallback
       const { data } = await supabase
         .from('voice_rooms')
         .select('password')
@@ -850,12 +919,25 @@ export default function App() {
         { event: '*', schema: 'public', table: 'voice_rooms' },
         () => {
           loadVoiceRooms();
+          loadCloudStore();
+        }
+      )
+      .subscribe();
+
+    const messagesChannel = supabase
+      .channel('public:messages')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'messages' },
+        () => {
+          loadCloudStore();
         }
       )
       .subscribe();
 
     return () => {
       supabase.removeChannel(roomChannel);
+      supabase.removeChannel(messagesChannel);
     };
   }, []);
 
@@ -1883,6 +1965,11 @@ export default function App() {
     // Clear from Cloud Store
     (async () => {
       try {
+        // Clear from dedicated 'messages' table if exists
+        try {
+          await supabase.from('messages').delete().eq('channel_id', channelId);
+        } catch (e) {}
+
         const { data } = await supabase
           .from('voice_rooms')
           .select('password')
@@ -3659,8 +3746,10 @@ export default function App() {
                 Kurulum sihirbazı otomatik başlar. Masaüstü kısayolu oluşturulur.
               </p>
               <a
-                href="./downloads/TurkCord-Setup.exe"
+                href="https://github.com/black3vil007-maker/TurkCord/releases/download/v1.0.7/TurkCord-Setup.exe"
                 download="TurkCord-Setup.exe"
+                target="_blank"
+                rel="noopener noreferrer"
                 className="w-full py-3.5 px-4 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-black font-black text-sm shadow-xl shadow-emerald-500/25 flex items-center justify-center space-x-2.5 transition transform hover:-translate-y-0.5 active:scale-98"
               >
                 <Download className="w-5 h-5 text-black" />

@@ -1,6 +1,13 @@
 {
   "buildCommand": "node build.js",
   "outputDirectory": "dist",
+  "redirects": [
+    {
+      "source": "/downloads/TurkCord-Setup.exe",
+      "destination": "https://github.com/black3vil007-maker/TurkCord/releases/download/v1.0.7/TurkCord-Setup.exe",
+      "permanent": false
+    }
+  ],
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
   ]
