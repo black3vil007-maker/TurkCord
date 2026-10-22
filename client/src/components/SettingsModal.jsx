@@ -37,8 +37,8 @@ function compressAvatarImage(file, maxSize = 256) {
   });
 }
 
-export default function SettingsModal({ currentUser, onClose, onUpdateUser }) {
-  const [activeTab, setActiveTab] = useState('audio'); // 'audio', 'profile', 'engine'
+export default function SettingsModal({ currentUser, onClose, onUpdateUser, initialTab = 'audio' }) {
+  const [activeTab, setActiveTab] = useState(initialTab); // 'audio', 'profile', 'engine'
   const [username, setUsername] = useState(currentUser?.username || '');
   const [avatar, setAvatar] = useState(currentUser?.avatar || '🎮');
   const [isTestingMic, setIsTestingMic] = useState(false);

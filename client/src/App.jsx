@@ -77,6 +77,8 @@ const saveCustomTextChannels = (channelsList) => {
   } catch (e) {}
 };
 
+const APP_VERSION = typeof window !== 'undefined' && window.electronAPI?.version ? `v${window.electronAPI.version}` : 'v1.0.4';
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
@@ -112,6 +114,7 @@ export default function App() {
   const [screenShareNotification, setScreenShareNotification] = useState(null);
   const [endedBroadcast, setEndedBroadcast] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState('profile');
   const [livePing, setLivePing] = useState(12);
   const [roomEventToast, setRoomEventToast] = useState(null);
   const [joiningRoomId, setJoiningRoomId] = useState(null);
@@ -2103,7 +2106,7 @@ export default function App() {
         <div className="flex items-center space-x-2 titlebar-no-drag">
           <TurkCordLogo size={16} />
           <span className="text-white text-[11px] font-black tracking-wide">TurkCord</span>
-          <span className="text-[10px] text-[#484f58] font-mono">v1.0.0</span>
+          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#161b22] border border-[#30363d]/80 text-emerald-400 font-bold">{APP_VERSION}</span>
         </div>
         <div className="flex items-center space-x-3 pr-36 titlebar-no-drag">
           <div className="flex items-center space-x-1.5 text-[10px] text-emerald-400 font-bold bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/20">
@@ -2271,9 +2274,12 @@ export default function App() {
               )}
 
               <button
-                onClick={() => setShowSettings(true)}
+                onClick={() => {
+                  setSettingsInitialTab('audio');
+                  setShowSettings(true);
+                }}
                 className="p-2 rounded-xl text-[#7d8590] hover:text-white hover:bg-[#21262d] transition"
-                title="Ayarlar"
+                title="Ses ve Donanım Ayarları"
               >
                 <Settings className="w-4 h-4" />
               </button>
@@ -2564,11 +2570,11 @@ export default function App() {
                                 }}
                                 className={`${
                                   isSelected ? 'flex' : 'hidden group-hover:flex'
-                                } px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-black text-xs shadow-md shadow-emerald-500/25 items-center space-x-1.5 transition transform active:scale-95 disabled:opacity-50`}
+                                } px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500 text-emerald-400 hover:text-black border border-emerald-500/30 hover:border-emerald-500 font-bold text-[11px] items-center space-x-1 transition disabled:opacity-50`}
                                 title={`${v.name} odasına katıl`}
                               >
-                                <Volume2 className="w-3.5 h-3.5" />
-                                <span>{joiningRoomId === v.id ? 'Bağlanıyor...' : 'Odaya Katıl'}</span>
+                                <Volume2 className="w-3 h-3" />
+                                <span>{joiningRoomId === v.id ? 'Bağlanıyor...' : 'Katıl'}</span>
                               </button>
                               {!isSelected && (
                                 <ChevronRight className="w-4 h-4 text-[#7d8590] group-hover:hidden" />
@@ -2723,91 +2729,115 @@ export default function App() {
             </div>
           )}
 
-          {/* Profil Bilgisi & Eylemler */}
-          <div className="flex items-center justify-between gap-2">
-            <div 
-              onClick={() => setShowSettings(true)}
-              className="flex items-center space-x-2.5 cursor-pointer hover:bg-[#21262d]/70 p-1.5 -ml-1 rounded-xl transition flex-1 min-w-0 group"
-              title="Profil Ayarlarını Aç"
-            >
-              <div className="relative flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center shadow">
-                <UserAvatar avatar={currentUser?.avatar} className="w-9 h-9 rounded-full border border-white/10" textClassName="text-2xl" />
-                <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-400 border-2 border-[#161b22] shadow-[0_0_8px_#10b981]" />
+          {/* Profil Bilgisi & Eylemler (Genişletilmiş, Düzenli 2 Katmanlı Kart) */}
+          <div className="p-2.5 rounded-2xl bg-[#161b22] border border-[#30363d] space-y-2.5 shadow-md">
+            {/* Üst Satır: Avatar, İsim ve Hızlı Eylem Düğmeleri */}
+            <div className="flex items-center justify-between gap-1.5">
+              <div 
+                onClick={() => {
+                  setSettingsInitialTab('profile');
+                  setShowSettings(true);
+                }}
+                className="flex items-center space-x-2 min-w-0 cursor-pointer flex-1 group/user hover:opacity-90 transition"
+                title="Profili Düzenle (Kullanıcı Adı & Avatar)"
+              >
+                <div className="relative flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center shadow">
+                  <UserAvatar avatar={currentUser?.avatar} className="w-8 h-8 rounded-full border border-white/10 group-hover/user:ring-2 ring-indigo-500 transition" textClassName="text-xl" />
+                  <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-[#161b22] shadow-[0_0_6px_#10b981]" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-black text-white truncate flex items-center space-x-1 leading-snug">
+                    <span className="truncate group-hover/user:text-indigo-400 transition">{currentUser?.username || 'Misafir'}</span>
+                    {isAdmin && (
+                      <span className="px-1 py-0.2 rounded bg-amber-500/20 text-amber-400 border border-amber-500/40 text-[8px] font-black tracking-wider flex-shrink-0">
+                        ADMIN
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[10px] text-[#7d8590] group-hover/user:text-indigo-300 flex items-center space-x-0.5 transition">
+                    <Pencil className="w-2.5 h-2.5 text-indigo-400" />
+                    <span>Düzenle</span>
+                  </div>
+                </div>
               </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-black text-white truncate leading-tight flex items-center space-x-1.5">
-                  <span className="truncate group-hover:text-indigo-300 transition">{currentUser?.username || 'Misafir'}</span>
-                  {isAdmin && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowAdminPanel(true);
-                      }}
-                      className="px-1.5 py-0.5 rounded-md bg-amber-500 hover:bg-amber-400 text-black text-[9px] font-black flex-shrink-0 flex items-center space-x-0.5 shadow transition"
-                      title="Yönetim Panelini Aç"
-                    >
-                      <ShieldAlert className="w-2.5 h-2.5" />
-                      <span>ADMIN</span>
-                    </button>
-                  )}
-                </div>
-                <div 
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (currentUser?.user_code) {
-                      navigator.clipboard.writeText(currentUser.user_code);
-                      setRoomEventToast({
-                        type: 'join',
-                        text: `ID Kopyalandı: #${currentUser.user_code} 📋`
-                      });
-                      setTimeout(() => setRoomEventToast(null), 2500);
-                    }
-                  }}
-                  className="inline-flex items-center space-x-1 mt-0.5 text-xs font-mono font-bold text-emerald-400 hover:text-emerald-300 transition cursor-pointer select-all"
-                  title="Tıklayarak 10 Haneli ID'ni Kopyala"
+
+              {/* Kontrol Butonları */}
+              <div className="flex items-center space-x-0.5 flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={handleToggleMute}
+                  className={`p-1.5 rounded-lg transition ${
+                    currentUser?.isMuted
+                      ? 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30'
+                      : 'text-[#7d8590] hover:text-white hover:bg-[#21262d]'
+                  }`}
+                  title={currentUser?.isMuted ? 'Mikrofonu Aç' : 'Mikrofonu Kapat'}
                 >
-                  <span className="text-[10px] text-[#7d8590] font-sans font-semibold">ID:</span>
-                  <span className="tracking-wider bg-[#0d1117] px-1.5 py-0.2 rounded border border-[#30363d]/80 text-[11px] text-emerald-400">
-                    #{currentUser?.user_code || '------'}
-                  </span>
-                  <Copy className="w-2.5 h-2.5 text-[#7d8590] group-hover:text-emerald-400 ml-0.5 transition" />
-                </div>
+                  {currentUser?.isMuted ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleToggleDeafen}
+                  className={`p-1.5 rounded-lg transition ${
+                    currentUser?.isDeafened
+                      ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30'
+                      : 'text-[#7d8590] hover:text-white hover:bg-[#21262d]'
+                  }`}
+                  title={currentUser?.isDeafened ? 'Kulaklığı Aç' : 'Kulaklığı Kapat'}
+                >
+                  <Headphones className="w-3.5 h-3.5" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSettingsInitialTab('audio');
+                    setShowSettings(true);
+                  }}
+                  className="p-1.5 rounded-lg text-[#7d8590] hover:text-white hover:bg-[#21262d] transition"
+                  title="Ses Ayarları"
+                >
+                  <Settings className="w-3.5 h-3.5" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleSignOut}
+                  className="p-1.5 rounded-lg text-[#7d8590] hover:text-rose-400 hover:bg-[#21262d] transition"
+                  title="Çıkış Yap"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                </button>
               </div>
             </div>
 
-            <div className="flex items-center space-x-0.5 flex-shrink-0">
-              <button
-                onClick={handleToggleMute}
-                className={`p-1.5 rounded-lg transition ${
-                  currentUser?.isMuted
-                    ? 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30'
-                    : 'text-[#7d8590] hover:text-white hover:bg-[#21262d]'
-                }`}
-                title={currentUser?.isMuted ? 'Mikrofonu Aç' : 'Mikrofonu Kapat'}
-              >
-                {currentUser?.isMuted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-              </button>
-
-              <button
-                onClick={handleToggleDeafen}
-                className={`p-1.5 rounded-lg transition ${
-                  currentUser?.isDeafened
-                    ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30'
-                    : 'text-[#7d8590] hover:text-white hover:bg-[#21262d]'
-                }`}
-                title={currentUser?.isDeafened ? 'Kulaklığı Aç' : 'Kulaklığı Kapat'}
-              >
-                <Headphones className="w-4 h-4" />
-              </button>
-
-              <button
-                onClick={handleSignOut}
-                className="p-1.5 rounded-lg text-[#7d8590] hover:text-rose-400 hover:bg-[#21262d] transition"
-                title="Çıkış Yap"
-              >
-                <LogOut className="w-4 h-4" />
-              </button>
+            {/* Alt Satır: 10 Haneli Benzersiz ID (Belirgin, Tam Genişlikte, Tek Tıkla Kopyalama) */}
+            <div 
+              onClick={(e) => {
+                e.stopPropagation();
+                if (currentUser?.user_code) {
+                  navigator.clipboard.writeText(currentUser.user_code);
+                  setRoomEventToast({
+                    type: 'join',
+                    text: `ID Kopyalandı: #${currentUser.user_code} 📋`
+                  });
+                  setTimeout(() => setRoomEventToast(null), 2500);
+                }
+              }}
+              className="flex items-center justify-between px-2.5 py-1 bg-[#0d1117] hover:bg-[#21262d] border border-[#30363d]/80 hover:border-emerald-500/50 rounded-xl cursor-pointer transition group/id shadow-inner"
+              title="Tıklayarak 10 Haneli Arkadaşlık ID'ni Kopyala"
+            >
+              <div className="flex items-center space-x-1.5 min-w-0">
+                <span className="text-[9px] uppercase font-bold text-[#7d8590] tracking-wider">ID:</span>
+                <span className="font-mono text-[11px] font-black text-emerald-400 tracking-wider truncate">
+                  #{currentUser?.user_code || '------'}
+                </span>
+              </div>
+              <div className="flex items-center space-x-1 text-[9px] text-[#7d8590] group-hover/id:text-emerald-300 font-semibold transition flex-shrink-0">
+                <Copy className="w-2.5 h-2.5 text-emerald-400" />
+                <span>Kopyala</span>
+              </div>
             </div>
           </div>
         </div>
@@ -3235,6 +3265,7 @@ export default function App() {
       {showSettings && (
         <SettingsModal
           currentUser={currentUser}
+          initialTab={settingsInitialTab}
           onClose={() => setShowSettings(false)}
           onUpdateUser={handleUpdateProfile}
         />
