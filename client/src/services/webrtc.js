@@ -9,7 +9,9 @@ const ICE_SERVERS = {
     { urls: 'stun:stun2.l.google.com:19302' },
     { urls: 'stun:stun3.l.google.com:19302' },
     { urls: 'stun:stun4.l.google.com:19302' },
-    { urls: 'stun:stun.cloudflare.com:3478' }
+    { urls: 'stun:stun.cloudflare.com:3478' },
+    { urls: 'stun:stun.services.mozilla.com' },
+    { urls: 'stun:global.stun.twilio.com:3478' }
   ],
   iceCandidatePoolSize: 10
 };
@@ -247,8 +249,11 @@ class WebRTCManager {
   }
 
   getEffectivePeerVolume(peerId) {
-    const peerVol = this.peerVolumes[peerId] ?? 100;
-    return Math.round((peerVol * (this.outputVolume / 100)));
+    const rawPeerVol = Number(this.peerVolumes[peerId]);
+    const peerVol = (!isNaN(rawPeerVol) && rawPeerVol >= 0) ? rawPeerVol : 100;
+    const rawOutVol = Number(this.outputVolume);
+    const outVol = (!isNaN(rawOutVol) && rawOutVol >= 0) ? rawOutVol : 100;
+    return Math.round((peerVol * (outVol / 100)));
   }
 
   updateAllPeerPlayoutVolumes() {
@@ -447,19 +452,18 @@ class WebRTCManager {
     }
 
     if (socket && socket.connected) {
-      // Primary: Fast dedicated Socket.io server (<5ms, room-aware)
       socket.emit(event, data);
-    } else {
-      // Fallback: Supabase Realtime when Socket server is not reachable (e.g. serverless)
-      if (event === 'webrtc:offer') {
-        realtimeSignaling.sendOffer(data.to, data.offer);
-      } else if (event === 'webrtc:answer') {
-        realtimeSignaling.sendAnswer(data.to, data.answer);
-      } else if (event === 'webrtc:ice-candidate') {
-        realtimeSignaling.sendCandidate(data.to, data.candidate);
-      } else if (event === 'voice:speaking') {
-        realtimeSignaling.sendSpeaking(data.isSpeaking);
-      }
+    }
+
+    // Always broadcast over Supabase Realtime so users on different PCs / Vercel seamlessly connect
+    if (event === 'webrtc:offer') {
+      realtimeSignaling.sendOffer(data.to, data.offer);
+    } else if (event === 'webrtc:answer') {
+      realtimeSignaling.sendAnswer(data.to, data.answer);
+    } else if (event === 'webrtc:ice-candidate') {
+      realtimeSignaling.sendCandidate(data.to, data.candidate);
+    } else if (event === 'voice:speaking') {
+      realtimeSignaling.sendSpeaking(data.isSpeaking);
     }
   }
 
@@ -481,10 +485,24 @@ class WebRTCManager {
         audioConstraints.deviceId = { exact: this.selectedInputDeviceId };
       }
 
-      this.rawStream = await navigator.mediaDevices.getUserMedia({
-        audio: audioConstraints,
-        video: false
-      });
+      try {
+        this.rawStream = await navigator.mediaDevices.getUserMedia({
+          audio: audioConstraints,
+          video: false
+        });
+      } catch (deviceErr) {
+        console.warn('[WebRTC] Specific mic device failed, falling back to default:', deviceErr);
+        this.selectedInputDeviceId = 'default';
+        localStorage.removeItem('turkcord_input_device_id');
+        this.rawStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          },
+          video: false
+        });
+      }
 
       this.localStream = this.rawStream;
 
@@ -629,6 +647,14 @@ class WebRTCManager {
 
   // Connect to an existing peer (Caller initiates offer)
   async createPeerConnection(peerId, isInitiator) {
+    if (!this.localStream) {
+      try {
+        await this.initLocalAudio();
+      } catch (e) {
+        console.warn('[WebRTC] createPeerConnection initLocalAudio error:', e);
+      }
+    }
+
     if (this.peers[peerId]) {
       const existingPc = this.peers[peerId].connection;
       if (existingPc && !['closed', 'failed', 'disconnected'].includes(existingPc.connectionState) && !isInitiator) {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { socket } from './services/socket';
 import { webrtc } from './services/webrtc';
 import { supabase } from './services/supabase';
@@ -171,6 +171,46 @@ export default function App() {
   const activeTextChannelRef = useRef(activeTextChannel);
   const currentUserRef = useRef(currentUser);
   const prevRoomMembersRef = useRef(new Set());
+  const voiceOccupantsRef = useRef(new Map()); // Map<userId, { roomId, user, lastSeen }>
+
+  const rebuildVoiceRooms = useCallback(() => {
+    const next = {};
+    const now = Date.now();
+    const myId = currentUserRef.current?.id;
+    const currentActiveRoom = activeVoiceChannelRef.current;
+
+    voiceOccupantsRef.current.forEach((occupant, userId) => {
+      // If not seen for 25s and not ourselves, expire
+      if (userId !== myId && now - occupant.lastSeen > 25000) {
+        voiceOccupantsRef.current.delete(userId);
+        return;
+      }
+      if (occupant.roomId) {
+        if (!next[occupant.roomId]) next[occupant.roomId] = [];
+        if (!next[occupant.roomId].some(u => u.id === userId)) {
+          next[occupant.roomId].push(occupant.user);
+        }
+      }
+    });
+
+    // Guarantee local user in their active room
+    if (currentActiveRoom && myId && currentUserRef.current) {
+      if (!next[currentActiveRoom]) next[currentActiveRoom] = [];
+      if (!next[currentActiveRoom].some(u => u.id === myId)) {
+        next[currentActiveRoom].push({
+          id: currentUserRef.current.id,
+          username: currentUserRef.current.username,
+          avatar: currentUserRef.current.avatar,
+          user_code: currentUserRef.current.user_code,
+          isAdmin: Boolean(currentUserRef.current.isAdmin || currentUserRef.current.is_admin),
+          socketId: socket?.id
+        });
+      }
+    }
+
+    setVoiceRooms(next);
+    return next;
+  }, []);
 
   useEffect(() => {
     activeVoiceChannelRef.current = activeVoiceChannel;
@@ -1180,28 +1220,20 @@ export default function App() {
     realtimeSignaling.init(currentUser);
 
     realtimeSignaling.onPresenceChange = (rooms, onlineUsers) => {
-      const sanitized = { ...(rooms || {}) };
-      const currentActiveRoom = activeVoiceChannelRef.current;
       const myId = currentUserRef.current?.id;
 
-      // Supabase Presence snapshot'ı içinde kullanıcının tek ve doğru odada kalmasını garantile
-      if (myId) {
-        Object.keys(sanitized).forEach(rId => {
-          sanitized[rId] = (sanitized[rId] || []).filter(u => u.id !== myId && u.socketId !== socket?.id);
-        });
-        if (currentActiveRoom) {
-          if (!sanitized[currentActiveRoom]) sanitized[currentActiveRoom] = [];
-          sanitized[currentActiveRoom].push({
-            id: currentUserRef.current.id,
-            username: currentUserRef.current.username,
-            avatar: currentUserRef.current.avatar,
-            user_code: currentUserRef.current.user_code,
-            socketId: socket?.id
+      // Integrate presence rooms into voiceOccupantsRef
+      if (rooms && typeof rooms === 'object') {
+        Object.entries(rooms).forEach(([rId, users]) => {
+          (users || []).forEach(u => {
+            if (u && u.id && u.id !== myId) {
+              voiceOccupantsRef.current.set(u.id, { roomId: rId, user: u, lastSeen: Date.now() });
+            }
           });
-        }
+        });
       }
 
-      setVoiceRooms(sanitized);
+      const sanitized = rebuildVoiceRooms();
       if (onlineUsers && onlineUsers.length > 0) {
         setAllUsers(onlineUsers);
       }
@@ -1247,44 +1279,39 @@ export default function App() {
         prevRoomMembersRef.current = currentIds;
 
         // 3. DETERMINISTIC WEBRTC MESH CONNECTION:
-        // When not on dedicated Socket.io (e.g. Vercel cloud deployment), establish connection to every other member in room.
-        // Rule: User with larger UUID is the designated initiator. This strictly prevents collisions and race conditions.
-        if (!socket || !socket.connected) {
-          currentMembers.forEach(async (member) => {
-            if (member && member.id && member.id !== currentUserRef.current?.id) {
-              const amIInitiator = String(currentUser.id) > String(member.id);
-              const peerObj = webrtc.peers[member.id];
-              const connState = peerObj?.connection?.connectionState;
-              const isAlive = peerObj && (connState === 'connected' || connState === 'connecting');
+        // Always establish connection with other room occupants across devices/browsers
+        // Rule: User with larger UUID is the designated initiator to strictly prevent collisions
+        currentMembers.forEach(async (member) => {
+          if (member && member.id && member.id !== currentUserRef.current?.id) {
+            const amIInitiator = String(currentUser.id) > String(member.id);
+            const peerObj = webrtc.peers[member.id];
+            const connState = peerObj?.connection?.connectionState;
+            const isAlive = peerObj && (connState === 'connected' || connState === 'connecting');
 
-              if (peerObj && ['failed', 'closed', 'disconnected'].includes(connState)) {
-                webrtc.closePeer(member.id);
-              }
-
-              if (amIInitiator && !isAlive) {
-                console.log('[WebRTC Mesh] Initiating audio connection with room peer:', member.username, member.id);
-                await webrtc.createPeerConnection(member.id, true);
-              }
+            if (peerObj && ['failed', 'closed', 'disconnected'].includes(connState)) {
+              webrtc.closePeer(member.id);
             }
-          });
-        }
+
+            if (amIInitiator && !isAlive) {
+              console.log('[WebRTC Mesh] Initiating audio connection with room peer:', member.username, member.id);
+              await webrtc.createPeerConnection(member.id, true);
+            }
+          }
+        });
       }
     };
 
     realtimeSignaling.onOffer = async (fromId, offer) => {
-      if (socket && socket.connected) return;
       console.log('[Realtime] Incoming WebRTC offer from:', fromId);
       await webrtc.handleOffer(fromId, offer);
     };
 
     realtimeSignaling.onAnswer = async (fromId, answer) => {
-      if (socket && socket.connected) return;
       console.log('[Realtime] Incoming WebRTC answer from:', fromId);
       await webrtc.handleAnswer(fromId, answer);
     };
 
     realtimeSignaling.onCandidate = async (fromId, candidate) => {
-      if (socket && socket.connected) return;
       await webrtc.handleCandidate(fromId, candidate);
     };
 
@@ -1394,36 +1421,13 @@ export default function App() {
       if (!userId || !user) return;
       const myId = currentUserRef.current?.id;
 
-      setVoiceRooms(prev => {
-        const next = { ...prev };
-        // Clean this user from all voice rooms
-        for (const rId in next) {
-          next[rId] = (next[rId] || []).filter(u => u.id !== userId && (u.username && user.username ? u.username.toLowerCase() !== user.username.toLowerCase() : true));
-        }
-        // If they joined a room, add them
-        if (roomId) {
-          if (!next[roomId]) next[roomId] = [];
-          if (!next[roomId].some(u => u.id === userId)) {
-            next[roomId].push(user);
-          }
-        }
-        // Always retain our own current active room
-        const activeRoom = activeVoiceChannelRef.current;
-        if (activeRoom && myId && currentUserRef.current) {
-          if (!next[activeRoom]) next[activeRoom] = [];
-          if (!next[activeRoom].some(u => u.id === myId)) {
-            next[activeRoom].push({
-              id: currentUserRef.current.id,
-              username: currentUserRef.current.username,
-              avatar: currentUserRef.current.avatar,
-              user_code: currentUserRef.current.user_code,
-              isAdmin: Boolean(currentUserRef.current.isAdmin || currentUserRef.current.is_admin),
-              socketId: socket?.id
-            });
-          }
-        }
-        return next;
-      });
+      if (roomId) {
+        voiceOccupantsRef.current.set(userId, { roomId, user, lastSeen: Date.now() });
+      } else {
+        voiceOccupantsRef.current.delete(userId);
+      }
+
+      rebuildVoiceRooms();
 
       setAllUsers(prev => {
         const exists = prev.some(u => u.id === userId);
@@ -1434,9 +1438,9 @@ export default function App() {
         }
       });
 
-      // Peer mesh sync when in the same room on cloud
+      // Peer mesh sync when in the same room
       const activeRoom = activeVoiceChannelRef.current;
-      if (activeRoom && roomId === activeRoom && userId !== myId && (!socket || !socket.connected)) {
+      if (activeRoom && roomId === activeRoom && userId !== myId) {
         const amIInitiator = String(myId) > String(userId);
         const peerObj = webrtc.peers[userId];
         const connState = peerObj?.connection?.connectionState;
@@ -1830,23 +1834,21 @@ export default function App() {
     prevRoomMembersRef.current = new Set();
 
     // 3. Yerel listede kullanıcının tek bir odada görünmesini garantile
-    setVoiceRooms(prev => {
-      const copy = {};
-      const myId = currentUserRef.current?.id;
-      for (const [rId, users] of Object.entries(prev)) {
-        copy[rId] = (users || []).filter(u => u.id !== myId && u.socketId !== socket?.id);
-      }
-      if (currentUserRef.current) {
-        copy[roomId] = [...(copy[roomId] || []), {
+    if (currentUserRef.current) {
+      voiceOccupantsRef.current.set(currentUserRef.current.id, {
+        roomId,
+        user: {
           id: currentUserRef.current.id,
           username: currentUserRef.current.username,
           avatar: currentUserRef.current.avatar,
           user_code: currentUserRef.current.user_code,
+          isAdmin: Boolean(currentUserRef.current.isAdmin || currentUserRef.current.is_admin),
           socketId: socket?.id
-        }];
-      }
-      return copy;
-    });
+        },
+        lastSeen: Date.now()
+      });
+      rebuildVoiceRooms();
+    }
 
     soundEffects.playSelfJoin();
     realtimeSignaling.sendVoiceUserState(roomId, currentUserRef.current);
@@ -1931,14 +1933,10 @@ export default function App() {
     webrtc.leaveRoom(false);
 
     // Kullanıcıyı tüm odalardan yerel olarak temizle
-    setVoiceRooms(prev => {
-      const copy = {};
-      const myId = currentUserRef.current?.id;
-      for (const [rId, users] of Object.entries(prev)) {
-        copy[rId] = (users || []).filter(u => u.id !== myId && u.socketId !== socket?.id);
-      }
-      return copy;
-    });
+    if (currentUserRef.current) {
+      voiceOccupantsRef.current.delete(currentUserRef.current.id);
+      rebuildVoiceRooms();
+    }
 
     realtimeSignaling.setVoiceRoom(null);
     realtimeSignaling.sendVoiceUserState(null, currentUserRef.current);

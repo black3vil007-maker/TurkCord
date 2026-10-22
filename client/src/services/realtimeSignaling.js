@@ -189,23 +189,20 @@ class RealtimeSignaling {
 
   async syncPresence() {
     if (!this.channel || !this.currentUser?.id) return;
-    this.presenceQueue = this.presenceQueue.then(async () => {
-      if (!this.channel || !this.currentUser?.id) return;
-      try {
-        await this.channel.track({
-          id: this.currentUser.id,
-          username: this.currentUser.username,
-          avatar: this.currentUser.avatar,
-          user_code: this.currentUser.user_code,
-          currentVoiceRoom: this.currentVoiceRoom,
-          isMuted: this.isMuted,
-          isDeafened: this.isDeafened
-        });
-      } catch (err) {
-        console.warn('[RealtimeSignaling] Track error:', err);
-      }
-    });
-    return this.presenceQueue;
+    try {
+      await this.channel.track({
+        id: this.currentUser.id,
+        username: this.currentUser.username,
+        avatar: this.currentUser.avatar,
+        user_code: this.currentUser.user_code,
+        isAdmin: Boolean(this.currentUser.isAdmin || this.currentUser.is_admin),
+        currentVoiceRoom: this.currentVoiceRoom || null,
+        isMuted: Boolean(this.isMuted),
+        isDeafened: Boolean(this.isDeafened)
+      });
+    } catch (err) {
+      console.warn('[RealtimeSignaling] Track error:', err);
+    }
   }
 
   handlePresenceSync() {
