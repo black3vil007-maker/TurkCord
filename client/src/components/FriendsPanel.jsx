@@ -15,6 +15,7 @@ import {
   Sparkles,
   ShieldAlert,
   UserMinus,
+  Mic,
   MicOff,
   Ban,
   ChevronDown,
@@ -33,6 +34,7 @@ export default function FriendsPanel({
   onOpenAdminPanel,
   onKickUser,
   onToggleMute,
+  adminMutedUsers = {},
   onTogglePassive
 }) {
   const [friends, setFriends] = useState([]);
@@ -380,13 +382,17 @@ export default function FriendsPanel({
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                if (onToggleMute) onToggleMute({ id: profile.id, username: profile.username }, false);
+                if (onToggleMute) onToggleMute({ id: profile.id, username: profile.username });
               }}
-              className="px-2 py-1 rounded-lg bg-[#21262d] hover:bg-rose-500 text-rose-300 hover:text-white border border-[#30363d] text-[10px] font-bold transition flex items-center space-x-1"
-              title="Kullanıcıyı sistem genelinde sustur"
+              className={`px-2 py-1 rounded-lg text-[10px] font-bold transition flex items-center space-x-1 border ${
+                adminMutedUsers[profile.id]
+                  ? 'bg-emerald-500/20 hover:bg-emerald-500 text-emerald-300 hover:text-black border-emerald-500/40'
+                  : 'bg-[#21262d] hover:bg-rose-500 text-rose-300 hover:text-white border-[#30363d]'
+              }`}
+              title={adminMutedUsers[profile.id] ? "Susturmayı Kaldır" : "Kullanıcıyı sistem genelinde sustur"}
             >
-              <MicOff className="w-3 h-3" />
-              <span>Sustur</span>
+              {adminMutedUsers[profile.id] ? <Mic className="w-3 h-3 text-emerald-400" /> : <MicOff className="w-3 h-3" />}
+              <span>{adminMutedUsers[profile.id] ? 'Mute Kaldır' : 'Sustur'}</span>
             </button>
             <button
               type="button"

@@ -16,6 +16,10 @@ import {
   MessageSquare,
   Users,
   ChevronRight,
+  ChevronUp,
+  ChevronDown,
+  Expand,
+  Shrink,
   LogOut,
   Plus,
   X,
@@ -89,7 +93,7 @@ const saveCustomTextChannels = (channelsList) => {
   } catch (e) {}
 };
 
-const APP_VERSION = 'v1.0.12';
+const APP_VERSION = 'v1.0.13';
 
 export default function App() {
   const [session, setSession] = useState(null);
@@ -99,6 +103,7 @@ export default function App() {
   const [pendingSentRequests, setPendingSentRequests] = useState(new Set());
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [isForceMuted, setIsForceMuted] = useState(false);
+  const [adminMutedUsers, setAdminMutedUsers] = useState({});
   const [adminNoticeModal, setAdminNoticeModal] = useState(null);
   const [activeTab, setActiveTab] = useState('voice'); // 'voice', 'chat', 'friends'
   const [channels, setChannels] = useState(() => ({
@@ -1148,6 +1153,12 @@ export default function App() {
         }
       })
       .on('broadcast', { event: 'admin:mute' }, ({ payload }) => {
+        if (payload?.targetUserId) {
+          setAdminMutedUsers(prev => ({
+            ...prev,
+            [payload.targetUserId]: Boolean(payload.isMuted)
+          }));
+        }
         if (payload?.targetUserId === currentUser.id) {
           setIsForceMuted(Boolean(payload.isMuted));
           if (payload.isMuted) {
@@ -1155,16 +1166,35 @@ export default function App() {
             setCurrentUser(prev => ({ ...prev, isMuted: true }));
             setAdminNoticeModal({
               title: 'Sessize Alındınız',
-              message: 'Yönetici tarafından sistem genelinde susturuldunuz.',
+              message: 'Yönetici tarafından sistem genelinde susturuldunuz (Muteban).',
               icon: '🔇'
             });
           } else {
+            webrtc.toggleMute(false);
+            setCurrentUser(prev => ({ ...prev, isMuted: false }));
             setAdminNoticeModal({
               title: 'Ses Kilidi Açıldı',
-              message: 'Yönetici mikrofon kilidinizi açtı.',
+              message: 'Yönetici mikrofon susturmanızı kaldırdı. Artık konuşabilirsiniz.',
               icon: '🔊'
             });
           }
+        }
+      })
+      .on('broadcast', { event: 'channels:reorder' }, ({ payload }) => {
+        if (payload?.type === 'voice' && Array.isArray(payload.orderedIds)) {
+          setChannels(prev => {
+            const voiceList = prev.voice || [];
+            const map = new Map(voiceList.map(v => [v.id, v]));
+            const newVoice = [];
+            payload.orderedIds.forEach(id => {
+              if (map.has(id)) {
+                newVoice.push(map.get(id));
+                map.delete(id);
+              }
+            });
+            map.forEach(v => newVoice.push(v));
+            return { ...prev, voice: newVoice };
+          });
         }
       })
       .on('broadcast', { event: 'admin:deactivate' }, async ({ payload }) => {
@@ -1209,9 +1239,18 @@ export default function App() {
     }
   };
 
-  const handleAdminToggleMute = async (targetUser, currentForceMute) => {
+  const handleAdminToggleMute = async (targetUser, explicitState) => {
     if (!isAdmin || !targetUser?.id) return;
-    const newMuteState = !currentForceMute;
+    const isCurrentlyMuted = typeof explicitState === 'boolean'
+      ? explicitState
+      : Boolean(adminMutedUsers[targetUser.id]);
+    const newMuteState = !isCurrentlyMuted;
+
+    setAdminMutedUsers(prev => ({
+      ...prev,
+      [targetUser.id]: newMuteState
+    }));
+
     try {
       supabase.channel('public:admin-moderation').send({
         type: 'broadcast',
@@ -1223,7 +1262,7 @@ export default function App() {
       }
       setRoomEventToast({
         type: 'join',
-        text: newMuteState ? `🔇 ${targetUser.username} susturuldu.` : `🔊 ${targetUser.username} sesi açıldı.`
+        text: newMuteState ? `🔇 ${targetUser.username} susturuldu (Muteban).` : `🔊 ${targetUser.username} susturması kaldırıldı.`
       });
       setTimeout(() => setRoomEventToast(null), 3500);
     } catch (e) {
@@ -1558,6 +1597,13 @@ export default function App() {
         voice: mergeVoiceChannels(prev.voice, state.channels?.voice)
       }));
       setAllUsers(state.users);
+      if (Array.isArray(state.users)) {
+        const mutes = {};
+        state.users.forEach(u => {
+          if (u.isForceMuted) mutes[u.id] = true;
+        });
+        setAdminMutedUsers(prev => ({ ...prev, ...mutes }));
+      }
 
       const rawRooms = { ...(state.voiceRooms || {}) };
       const currentActiveRoom = activeVoiceChannelRef.current;
@@ -1609,6 +1655,13 @@ export default function App() {
 
     socket.on('users:updated', (usersList) => {
       setAllUsers(usersList);
+      if (Array.isArray(usersList)) {
+        const mutes = {};
+        usersList.forEach(u => {
+          if (u.isForceMuted) mutes[u.id] = true;
+        });
+        setAdminMutedUsers(prev => ({ ...prev, ...mutes }));
+      }
       if (currentUserRef.current?.username) {
         const me = usersList.find(u => (currentUserRef.current.id && (u.id === currentUserRef.current.id || u.socketId === socket.id)) || u.username === currentUserRef.current.username);
         if (me) {
@@ -1784,13 +1837,15 @@ export default function App() {
         setCurrentUser(prev => ({ ...prev, isMuted: true }));
         setAdminNoticeModal({
           title: 'Sessize Alındınız',
-          message: 'Yönetici tarafından mikrofonunuz kapatıldı.',
+          message: 'Yönetici tarafından mikrofonunuz susturuldu (Muteban).',
           icon: '🔇'
         });
       } else {
+        webrtc.toggleMute(false);
+        setCurrentUser(prev => ({ ...prev, isMuted: false }));
         setAdminNoticeModal({
           title: 'Ses Kilidi Açıldı',
-          message: 'Yönetici mikrofon kilidinizi açtı.',
+          message: 'Yönetici mikrofon susturmanızı kaldırdı. Artık konuşabilirsiniz.',
           icon: '🔊'
         });
       }
@@ -2240,6 +2295,60 @@ export default function App() {
     }
   };
 
+  const handleMoveVoiceRoom = (index, direction) => {
+    if (!isAdmin) return;
+    const newIndex = index + direction;
+    const voiceList = channels.voice || [];
+    if (newIndex < 0 || newIndex >= voiceList.length) return;
+
+    const updated = [...voiceList];
+    const [moved] = updated.splice(index, 1);
+    updated.splice(newIndex, 0, moved);
+
+    const updatedChannels = {
+      ...channels,
+      voice: updated
+    };
+    setChannels(updatedChannels);
+
+    try {
+      localStorage.setItem('turkcord_voice_rooms_order', JSON.stringify(updated.map(v => v.id)));
+    } catch (e) {}
+
+    if (socket && socket.connected) {
+      socket.emit('channels:reorder', { type: 'voice', orderedIds: updated.map(v => v.id) });
+    }
+    try {
+      supabase.channel('public:admin-moderation').send({
+        type: 'broadcast',
+        event: 'channels:reorder',
+        payload: { type: 'voice', orderedIds: updated.map(v => v.id) }
+      });
+    } catch (e) {}
+  };
+
+  const handleMoveTextChannel = (index, direction) => {
+    if (!isAdmin) return;
+    const newIndex = index + direction;
+    const textList = channels.text || [];
+    if (newIndex < 0 || newIndex >= textList.length) return;
+
+    const updated = [...textList];
+    const [moved] = updated.splice(index, 1);
+    updated.splice(newIndex, 0, moved);
+
+    const updatedChannels = {
+      ...channels,
+      text: updated
+    };
+    setChannels(updatedChannels);
+    saveCustomTextChannels(updated);
+
+    if (socket && socket.connected) {
+      socket.emit('channels:reorder', { type: 'text', orderedIds: updated.map(t => t.id) });
+    }
+  };
+
   const handleSignOut = async () => {
     if (activeVoiceChannel) handleLeaveVoice();
     await supabase.auth.signOut();
@@ -2657,29 +2766,40 @@ export default function App() {
       <div className="flex flex-1 overflow-hidden relative">
       {/* Canlı Oda Daveti Bildirimi (Floating Toast) */}
       {incomingInvite && (
-        <div className="absolute top-5 left-1/2 -translate-x-1/2 z-50 bg-[#161b22] border-2 border-emerald-500 rounded-2xl p-4 shadow-2xl flex items-center space-x-4 animate-bounce-subtle">
-          <div className="text-3xl">{incomingInvite.senderAvatar}</div>
-          <div>
-            <div className="text-sm font-bold text-white">
-              {incomingInvite.senderName} seni ses odasına davet ediyor!
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[9999] max-w-md w-full px-4 pointer-events-auto animate-bounce-subtle">
+          <div className="bg-[#161b22]/95 backdrop-blur-xl border-2 border-emerald-500 rounded-2xl p-4 shadow-2xl flex items-center space-x-3.5 ring-2 ring-emerald-500/30">
+            <UserAvatar 
+              avatar={incomingInvite.senderAvatar} 
+              fallback="🎮" 
+              className="w-12 h-12 rounded-xl flex-shrink-0 border border-emerald-500/40" 
+              textClassName="text-2xl"
+            />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-bold text-white truncate">
+                {incomingInvite.senderName} seni davet ediyor!
+              </div>
+              <div className="text-xs text-emerald-400 font-medium truncate flex items-center space-x-1 mt-0.5">
+                <Volume2 className="w-3.5 h-3.5 flex-shrink-0" />
+                <span className="truncate">{incomingInvite.room_name} odasına katıl</span>
+              </div>
             </div>
-            <div className="text-xs text-emerald-400 font-medium">
-              🔊 {incomingInvite.room_name} odasına katılmak ister misin?
+            <div className="flex items-center space-x-2 flex-shrink-0">
+              <button
+                type="button"
+                onClick={handleAcceptInvite}
+                className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-extrabold text-xs transition shadow-md shadow-emerald-500/30 active:scale-95 cursor-pointer"
+              >
+                Katıl
+              </button>
+              <button
+                type="button"
+                onClick={handleDeclineInvite}
+                className="p-2 rounded-xl bg-rose-500/20 hover:bg-rose-500 text-rose-400 hover:text-white transition cursor-pointer"
+                title="Reddet"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
-          </div>
-          <div className="flex items-center space-x-2 pl-2">
-            <button
-              onClick={handleAcceptInvite}
-              className="px-3.5 py-1.5 rounded-xl bg-emerald-500 text-black font-bold text-xs hover:bg-emerald-400 transition"
-            >
-              Katıl
-            </button>
-            <button
-              onClick={handleDeclineInvite}
-              className="p-1.5 rounded-xl bg-rose-500/20 text-rose-400 hover:bg-rose-500 hover:text-white transition"
-            >
-              <X className="w-4 h-4" />
-            </button>
           </div>
         </div>
       )}
@@ -3000,7 +3120,7 @@ export default function App() {
                 )}
 
                 {/* Odalar */}
-                {channels.voice?.map((v) => {
+                {channels.voice?.map((v, idx) => {
                   const isCurrent = activeVoiceChannel === v.id;
                   const isSelected = selectedVoiceRoomId === v.id;
                   let usersInRoom = voiceRooms[v.id] || [];
@@ -3068,9 +3188,37 @@ export default function App() {
                         </div>
 
                         <div className="flex items-center space-x-1.5">
-                          {/* Düzenle & Sil Butonları (Sadece Oda Sahibi veya Admin) */}
+                          {/* Düzenle & Sil & Sıralama Butonları (Sadece Oda Sahibi veya Admin) */}
                           {canManage && (
-                            <div className="hidden group-hover:flex items-center space-x-1 mr-1">
+                            <div className="hidden group-hover:flex items-center space-x-0.5 mr-1 bg-[#161b22]/90 p-0.5 rounded-lg border border-[#30363d]/80">
+                              {isAdmin && (
+                                <>
+                                  <button
+                                    type="button"
+                                    disabled={idx === 0}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleMoveVoiceRoom(idx, -1);
+                                    }}
+                                    className="p-1 rounded text-[#7d8590] hover:text-white hover:bg-[#30363d] transition disabled:opacity-20 disabled:hover:bg-transparent"
+                                    title="Yukarı Taşı"
+                                  >
+                                    <ChevronUp className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={idx === (channels.voice || []).length - 1}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleMoveVoiceRoom(idx, 1);
+                                    }}
+                                    className="p-1 rounded text-[#7d8590] hover:text-white hover:bg-[#30363d] transition disabled:opacity-20 disabled:hover:bg-transparent"
+                                    title="Aşağı Taşı"
+                                  >
+                                    <ChevronDown className="w-3.5 h-3.5" />
+                                  </button>
+                                </>
+                              )}
                               <button
                                 type="button"
                                 onClick={(e) => {
@@ -3191,7 +3339,7 @@ export default function App() {
                   </button>
                 </div>
 
-                {channels.text?.map((c) => {
+                {channels.text?.map((c, idx) => {
                   const isCurrent = activeTextChannel === c.id;
                   const isAnnouncement = c.isAnnouncement || c.id === 'turkcord-updates';
                   const unread = unreadCounts[c.id] || 0;
@@ -3235,6 +3383,35 @@ export default function App() {
                           </span>
                         )}
 
+                        {isAdmin && (
+                          <div className="hidden group-hover:flex items-center space-x-0.5 mr-0.5">
+                            <button
+                              type="button"
+                              disabled={idx === 0}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleMoveTextChannel(idx, -1);
+                              }}
+                              className="p-1 rounded text-[#7d8590] hover:text-white hover:bg-[#30363d] transition disabled:opacity-20"
+                              title="Yukarı Taşı"
+                            >
+                              <ChevronUp className="w-3 h-3" />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={idx === (channels.text || []).length - 1}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleMoveTextChannel(idx, 1);
+                              }}
+                              className="p-1 rounded text-[#7d8590] hover:text-white hover:bg-[#30363d] transition disabled:opacity-20"
+                              title="Aşağı Taşı"
+                            >
+                              <ChevronDown className="w-3 h-3" />
+                            </button>
+                          </div>
+                        )}
+
                         {canDelete && (
                           <button
                             type="button"
@@ -3267,6 +3444,7 @@ export default function App() {
                 onOpenAdminPanel={() => setShowAdminPanel(true)}
                 onKickUser={handleAdminKickUser}
                 onToggleMute={handleAdminToggleMute}
+                adminMutedUsers={adminMutedUsers}
                 onTogglePassive={handleAdminTogglePassive}
               />
             )}
@@ -3604,9 +3782,13 @@ export default function App() {
                         </div>
 
                         <div className="flex items-center space-x-1.5 mt-1 text-[#7d8590] text-xs">
-                          {u.isMuted && <span className="text-rose-400 font-medium">Susturuldu</span>}
+                          {adminMutedUsers[u.id] ? (
+                            <span className="text-rose-400 font-bold px-1.5 py-0.5 rounded bg-rose-500/10 border border-rose-500/30">Muteban</span>
+                          ) : u.isMuted ? (
+                            <span className="text-rose-400 font-medium">Susturuldu</span>
+                          ) : null}
                           {u.isDeafened && <span className="text-amber-400 font-medium">Sağır</span>}
-                          {!u.isMuted && !u.isDeafened && (
+                          {!adminMutedUsers[u.id] && !u.isMuted && !u.isDeafened && (
                             <span className={isSpeaking ? 'text-emerald-400 font-bold' : 'text-[#7d8590]'}>
                               {isSpeaking ? 'Konuşuyor 🎙️' : 'Dinliyor'}
                             </span>
@@ -3709,13 +3891,17 @@ export default function App() {
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                handleAdminToggleMute(u, speakingUsers[u.id] === 'muted');
+                                handleAdminToggleMute(u);
                               }}
-                              className="flex-1 py-1 px-1.5 rounded-lg bg-[#21262d] hover:bg-rose-500 text-rose-300 hover:text-white border border-[#30363d] text-[10px] font-bold transition flex items-center justify-center space-x-1"
-                              title="Bu kullanıcıyı sistem genelinde sustur"
+                              className={`flex-1 py-1 px-1.5 rounded-lg text-[10px] font-bold transition flex items-center justify-center space-x-1 border ${
+                                adminMutedUsers[u.id]
+                                  ? 'bg-emerald-500/20 hover:bg-emerald-500 text-emerald-300 hover:text-black border-emerald-500/40'
+                                  : 'bg-[#21262d] hover:bg-rose-500 text-rose-300 hover:text-white border-[#30363d]'
+                              }`}
+                              title={adminMutedUsers[u.id] ? "Susturmayı Kaldır (Muteban Aç)" : "Bu kullanıcıyı sistem genelinde sustur (Muteban)"}
                             >
-                              <MicOff className="w-3 h-3" />
-                              <span>Sustur</span>
+                              {adminMutedUsers[u.id] ? <Mic className="w-3 h-3 text-emerald-400" /> : <MicOff className="w-3 h-3 text-rose-300" />}
+                              <span>{adminMutedUsers[u.id] ? 'Mute Kaldır' : 'Sustur'}</span>
                             </button>
 
                             <button
@@ -3881,6 +4067,7 @@ export default function App() {
           onClose={() => setShowAdminPanel(false)}
           onKickUser={handleAdminKickUser}
           onToggleMute={handleAdminToggleMute}
+          adminMutedUsers={adminMutedUsers}
           onTogglePassive={handleAdminTogglePassive}
         />
       )}
@@ -3958,7 +4145,7 @@ export default function App() {
                 Kurulum sihirbazı otomatik başlar. Masaüstü kısayolu oluşturulur.
               </p>
               <a
-                href="https://github.com/black3vil007-maker/TurkCord/releases/download/v1.0.12/TurkCord-Setup.exe"
+                href="https://github.com/black3vil007-maker/TurkCord/releases/download/v1.0.13/TurkCord-Setup.exe"
                 download="TurkCord-Setup.exe"
                 target="_blank"
                 rel="noopener noreferrer"
@@ -5140,6 +5327,9 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
   const containerRef = React.useRef(null);
   const videoRef = React.useRef(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isTheater, setIsTheater] = useState(false);
+  const [streamVolume, setStreamVolume] = useState(100);
+  const [isStreamMuted, setIsStreamMuted] = useState(false);
   const [showQualityMenu, setShowQualityMenu] = useState(false);
   const [isEnded, setIsEnded] = useState(false);
 
@@ -5159,6 +5349,10 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
 
     if (videoRef.current) {
       videoRef.current.srcObject = stream;
+      if (!isLocal) {
+        videoRef.current.muted = isStreamMuted;
+        videoRef.current.volume = isStreamMuted ? 0 : streamVolume / 100;
+      }
       videoRef.current.play().catch(e => {
         console.warn('[Video] Play interrupted / user gesture needed:', e);
       });
@@ -5184,14 +5378,27 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
       videoTrack.removeEventListener('ended', handleEnded);
       videoTrack.removeEventListener('unmute', handleUnmute);
     };
-  }, [stream]);
+  }, [stream, isLocal]);
+
+  // Adjust viewer audio volume dynamically
+  useEffect(() => {
+    if (videoRef.current && !isLocal) {
+      videoRef.current.muted = isStreamMuted;
+      videoRef.current.volume = isStreamMuted ? 0 : streamVolume / 100;
+    }
+  }, [streamVolume, isStreamMuted, isLocal]);
 
   const toggleFullscreen = () => {
-    if (!containerRef.current) return;
-    if (!document.fullscreenElement) {
-      containerRef.current.requestFullscreen().then(() => setIsFullscreen(true)).catch(() => {});
+    if (!isFullscreen) {
+      if (containerRef.current && containerRef.current.requestFullscreen) {
+        containerRef.current.requestFullscreen().catch(() => {});
+      }
+      setIsFullscreen(true);
     } else {
-      document.exitFullscreen().then(() => setIsFullscreen(false)).catch(() => {});
+      if (document.fullscreenElement) {
+        try { document.exitFullscreen().catch(() => {}); } catch (e) {}
+      }
+      setIsFullscreen(false);
     }
   };
 
@@ -5199,16 +5406,24 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
     const handleFsChange = () => {
       setIsFullscreen(Boolean(document.fullscreenElement));
     };
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && isFullscreen) {
+        setIsFullscreen(false);
+      }
+    };
     document.addEventListener('fullscreenchange', handleFsChange);
-    return () => document.removeEventListener('fullscreenchange', handleFsChange);
-  }, []);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFsChange);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isFullscreen]);
 
   const resolutions = [
-    { id: 'auto', label: '⚡ Otomatik', desc: 'İnternet Hızına Göre (Max 120 FPS)' },
-    { id: '1080p-120', label: '1080p 120 FPS', desc: '🚀 e-Sports Ultra Akıcı (12 Mbps)' },
-    { id: '1080p', label: '1080p 60 FPS', desc: 'FHD Kristal Netlik (8 Mbps)' },
-    { id: '720p', label: '720p 60 FPS', desc: 'HD Akıcı (4 Mbps)' },
-    { id: '480p', label: '480p 30 FPS', desc: 'SD Tasarruf (1.2 Mbps)' },
+    { id: 'auto', label: '⚡ Otomatik', desc: 'İnternet Hızına Göre Dengeli' },
+    { id: '1080p', label: '1080p 60 FPS', desc: 'FHD Kristal Netlik (3.5 Mbps)' },
+    { id: '720p', label: '720p 60 FPS', desc: 'HD Akıcı (1.8 Mbps)' },
+    { id: '480p', label: '480p 30 FPS', desc: 'SD Tasarruf (800 kbps)' },
   ];
 
   if (isEnded) {
@@ -5234,37 +5449,80 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
   return (
     <div
       ref={containerRef}
-      className={`my-4 relative rounded-3xl overflow-hidden bg-black aspect-video max-h-[52vh] mx-auto border-2 border-indigo-500/40 flex items-center justify-center shadow-2xl group transition-all ${
-        isFullscreen ? 'w-screen h-screen max-h-screen my-0 rounded-none border-none' : 'w-full'
+      className={`relative rounded-3xl overflow-hidden bg-black flex items-center justify-center shadow-2xl group transition-all select-none ${
+        isFullscreen
+          ? 'fixed inset-0 z-[99999] w-screen h-screen max-h-none rounded-none border-none'
+          : isTheater
+          ? 'w-full flex-1 min-h-[60vh] max-h-[82vh] my-2 border-2 border-indigo-500/50'
+          : 'my-3 w-full aspect-video max-h-[52vh] mx-auto border-2 border-indigo-500/40'
       }`}
     >
       <video
         ref={videoRef}
         autoPlay
         playsInline
-        muted={true}
+        muted={Boolean(isLocal || isStreamMuted)}
         className="w-full h-full object-contain cursor-pointer"
-        onClick={toggleFullscreen}
+        onDoubleClick={toggleFullscreen}
       />
 
       {/* Kontrol Çubuğu */}
-      <div className="absolute top-3 left-3 right-3 flex items-center justify-between pointer-events-none">
+      <div className="absolute top-3 left-3 right-3 flex items-center justify-between pointer-events-none z-20">
         {/* Canlı Yayında Rozeti */}
-        <div className="flex items-center space-x-2 bg-black/80 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-white/10 pointer-events-auto">
+        <div className="flex items-center space-x-2 bg-black/85 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-white/10 pointer-events-auto shadow-lg">
           <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse" />
           <span className="text-xs font-black text-white">
             {isLocal ? 'Senin Ekran Yayının' : `${broadcasterName || 'Arkadaşın'} Yayında`}
           </span>
+          {!isLocal && stream?.getAudioTracks().length > 0 && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold border border-emerald-500/30 flex items-center space-x-1">
+              <Volume2 className="w-3 h-3" />
+              <span>Ses Açık</span>
+            </span>
+          )}
         </div>
 
-        {/* Çözünürlük & Tam Ekran Araçları */}
+        {/* Çözünürlük, Ses, Tiyatro & Tam Ekran Araçları */}
         <div className="flex items-center space-x-2 pointer-events-auto">
+          {/* İzleyici Ses Ayarı (Eğer yayın sesi varsa) */}
+          {!isLocal && (
+            <div className="flex items-center space-x-1.5 bg-black/85 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/10 shadow-lg text-white">
+              <button
+                type="button"
+                onClick={() => setIsStreamMuted(!isStreamMuted)}
+                className="hover:text-emerald-400 transition"
+                title={isStreamMuted ? 'Yayın Sesini Aç' : 'Yayın Sesini Kapat'}
+              >
+                {isStreamMuted ? (
+                  <VolumeX className="w-4 h-4 text-rose-400" />
+                ) : (
+                  <Volume2 className="w-4 h-4 text-emerald-400" />
+                )}
+              </button>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={isStreamMuted ? 0 : streamVolume}
+                onChange={(e) => {
+                  setStreamVolume(Number(e.target.value));
+                  setIsStreamMuted(false);
+                }}
+                className="w-16 h-1 bg-white/30 rounded-lg appearance-none cursor-pointer accent-emerald-400"
+                title={`Yayın Ses Seviyesi: %${isStreamMuted ? 0 : streamVolume}`}
+              />
+              <span className="text-[10px] font-mono font-bold text-[#8b949e] w-7">
+                %{isStreamMuted ? 0 : streamVolume}
+              </span>
+            </div>
+          )}
+
           {/* Çözünürlük Seçici Menü */}
           <div className="relative">
             <button
               type="button"
               onClick={() => setShowQualityMenu(!showQualityMenu)}
-              className="flex items-center space-x-1.5 bg-black/80 hover:bg-[#21262d] text-white text-xs font-bold px-3 py-1.5 rounded-xl border border-white/10 backdrop-blur-md transition shadow"
+              className="flex items-center space-x-1.5 bg-black/85 hover:bg-[#21262d] text-white text-xs font-bold px-3 py-1.5 rounded-xl border border-white/10 backdrop-blur-md transition shadow-lg"
               title="Çözünürlük / Kalite Seçimi"
             >
               <Tv className="w-3.5 h-3.5 text-amber-400" />
@@ -5272,7 +5530,7 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
             </button>
 
             {showQualityMenu && (
-              <div className="absolute right-0 mt-1.5 w-44 rounded-2xl bg-[#161b22] border border-[#30363d] p-1.5 shadow-2xl z-30 space-y-1 animate-in fade-in zoom-in-95 duration-150">
+              <div className="absolute right-0 mt-1.5 w-48 rounded-2xl bg-[#161b22] border border-[#30363d] p-1.5 shadow-2xl z-30 space-y-1 animate-in fade-in zoom-in-95 duration-150">
                 <div className="text-[10px] font-bold text-[#7d8590] uppercase px-2.5 py-1">
                   İzleme Kalitesi
                 </div>
@@ -5298,14 +5556,26 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
             )}
           </div>
 
+          {/* Tiyatro / Sinema Modu (Pencereyi Kapla) */}
+          {!isFullscreen && (
+            <button
+              type="button"
+              onClick={() => setIsTheater(!isTheater)}
+              className="p-1.5 rounded-xl bg-black/85 hover:bg-[#21262d] text-white border border-white/10 backdrop-blur-md transition shadow-lg"
+              title={isTheater ? 'Küçült (Normal Boyut)' : 'Genişlet (Sinema Modu)'}
+            >
+              {isTheater ? <Shrink className="w-4 h-4 text-indigo-400" /> : <Expand className="w-4 h-4 text-white" />}
+            </button>
+          )}
+
           {/* Tam Ekran Butonu */}
           <button
             type="button"
             onClick={toggleFullscreen}
-            className="p-1.5 rounded-xl bg-black/80 hover:bg-[#21262d] text-white border border-white/10 backdrop-blur-md transition shadow"
-            title={isFullscreen ? 'Tam Ekrandan Çık' : 'Tam Ekran Yap'}
+            className="p-1.5 rounded-xl bg-black/85 hover:bg-[#21262d] text-white border border-white/10 backdrop-blur-md transition shadow-lg"
+            title={isFullscreen ? 'Tam Ekrandan Çık (Esc)' : 'Tam Ekran Yap (Çift Tıkla)'}
           >
-            {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+            {isFullscreen ? <Minimize2 className="w-4 h-4 text-amber-400" /> : <Maximize2 className="w-4 h-4" />}
           </button>
         </div>
       </div>

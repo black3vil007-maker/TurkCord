@@ -393,6 +393,36 @@ io.on('connection', (socket) => {
     io.emit('voice:rooms-updated', getVoiceRoomsData());
   });
 
+  // Dynamic channel reordering (Admin or User room order updates)
+  socket.on('channels:reorder', ({ type, orderedIds }) => {
+    if (!type || !Array.isArray(orderedIds)) return;
+    if (type === 'voice' && channels.voice) {
+      const map = new Map(channels.voice.map(v => [v.id, v]));
+      const newVoice = [];
+      orderedIds.forEach(id => {
+        if (map.has(id)) {
+          newVoice.push(map.get(id));
+          map.delete(id);
+        }
+      });
+      map.forEach(v => newVoice.push(v));
+      channels.voice = newVoice;
+      io.emit('channels:updated', channels);
+    } else if (type === 'text' && channels.text) {
+      const map = new Map(channels.text.map(t => [t.id, t]));
+      const newText = [];
+      orderedIds.forEach(id => {
+        if (map.has(id)) {
+          newText.push(map.get(id));
+          map.delete(id);
+        }
+      });
+      map.forEach(t => newText.push(t));
+      channels.text = newText;
+      io.emit('channels:updated', channels);
+    }
+  });
+
   // Voice room join with strict single-room occupancy per user across all sessions/devices
   socket.on('voice:join', ({ roomId, user: clientUser }) => {
     let user = users[socket.id];

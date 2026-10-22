@@ -1025,6 +1025,22 @@ class WebRTCManager {
         videoTrack.contentHint = 'detail';
       }
 
+      // Capture and mix system audio if user enabled "Share Audio"
+      const screenAudioTrack = this.screenStream.getAudioTracks()[0];
+      if (screenAudioTrack && this.audioContext && this.audioDestination) {
+        try {
+          const screenAudioStream = new MediaStream([screenAudioTrack]);
+          this.screenAudioSourceNode = this.audioContext.createMediaStreamSource(screenAudioStream);
+          this.screenAudioGainNode = this.audioContext.createGain();
+          this.screenAudioGainNode.gain.setValueAtTime(1.0, this.audioContext.currentTime);
+          this.screenAudioSourceNode.connect(this.screenAudioGainNode);
+          this.screenAudioGainNode.connect(this.audioDestination);
+          console.log('[WebRTC] System screen audio successfully mixed into WebRTC voice stream');
+        } catch (mixErr) {
+          console.warn('[WebRTC] Error mixing screen audio into DSP pipeline:', mixErr);
+        }
+      }
+
       // Add track to all connected peers and renegotiate
       for (const [peerId, peer] of Object.entries(this.peers)) {
         const sender = peer.connection.getSenders().find(s => s.track && s.track.kind === 'video');
@@ -1034,6 +1050,17 @@ class WebRTCManager {
           peer.connection.addTrack(videoTrack, this.screenStream);
           await this.renegotiate(peerId, peer.connection);
         }
+
+        if (screenAudioTrack) {
+          const senders = peer.connection.getSenders();
+          if (!senders.some(s => s.track && s.track.id === screenAudioTrack.id)) {
+            try {
+              peer.connection.addTrack(screenAudioTrack, this.screenStream);
+              await this.renegotiate(peerId, peer.connection);
+            } catch (e) {}
+          }
+        }
+
         this.setVideoQualityForPeer(peerId, targetQuality);
       }
 
@@ -1053,18 +1080,33 @@ class WebRTCManager {
   }
 
   stopScreenShare() {
+    if (this.screenAudioSourceNode) {
+      try { this.screenAudioSourceNode.disconnect(); } catch (e) {}
+      this.screenAudioSourceNode = null;
+    }
+    if (this.screenAudioGainNode) {
+      try { this.screenAudioGainNode.disconnect(); } catch (e) {}
+      this.screenAudioGainNode = null;
+    }
+
     if (this.screenStream) {
       this.screenStream.getTracks().forEach(t => t.stop());
       this.screenStream = null;
 
-      // Remove video track from peers and renegotiate
+      // Remove video track and any screen audio track from peers and renegotiate
       for (const [peerId, peer] of Object.entries(this.peers)) {
-        const sender = peer.connection.getSenders().find(s => s.track && s.track.kind === 'video');
-        if (sender) {
-          try {
-            peer.connection.removeTrack(sender);
-            this.renegotiate(peerId, peer.connection);
-          } catch (e) {}
+        const senders = peer.connection.getSenders();
+        let needsRenegotiate = false;
+        for (const sender of senders) {
+          if (sender.track && sender.track.kind === 'video') {
+            try {
+              peer.connection.removeTrack(sender);
+              needsRenegotiate = true;
+            } catch (e) {}
+          }
+        }
+        if (needsRenegotiate) {
+          this.renegotiate(peerId, peer.connection);
         }
       }
 

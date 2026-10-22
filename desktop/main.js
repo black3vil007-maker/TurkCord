@@ -110,7 +110,7 @@ if (!gotTheLock) {
       session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
         desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 } }).then((sources) => {
           if (sources.length > 0) {
-            callback({ video: sources[0], audio: 'loopbackWithMute' });
+            callback({ video: sources[0], audio: 'loopback' });
           } else {
             callback(null);
           }

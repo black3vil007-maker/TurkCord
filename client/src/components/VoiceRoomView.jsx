@@ -255,7 +255,7 @@ function RemoteVideoPlayer({ stream }) {
       ref={videoRef}
       autoPlay
       playsInline
-      muted={true}
+      muted={false}
       className="w-full h-full object-contain"
     />
   );

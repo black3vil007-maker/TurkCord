@@ -24,6 +24,7 @@ export default function AdminPanelModal({
   channels,
   onKickUser,
   onToggleMute,
+  adminMutedUsers = {},
   onTogglePassive
 }) {
   const [profiles, setProfiles] = useState([]);
@@ -228,22 +229,27 @@ export default function AdminPanelModal({
                     </button>
 
                     {/* Sustur / Sesi Aç */}
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        await onToggleMute(profile, onlineData?.isForceMuted);
-                        setActionNotice(`${profile.username} için susturma durumu güncellendi.`);
-                      }}
-                      className={`px-2.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center space-x-1 border ${
-                        onlineData?.isForceMuted
-                          ? 'bg-rose-500 text-white border-rose-400 shadow'
-                          : 'bg-[#21262d] hover:bg-[#30363d] text-[#c9d1d9] border-[#30363d]'
-                      }`}
-                      title={onlineData?.isForceMuted ? 'Sessizlik Kilidini Kaldır' : 'Sistem Genelinde Sustur'}
-                    >
-                      {onlineData?.isForceMuted ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5 text-rose-400" />}
-                      <span>{onlineData?.isForceMuted ? 'Sesi Aç' : 'Sustur'}</span>
-                    </button>
+                    {(() => {
+                      const isUserMuted = Boolean(onlineData?.isForceMuted || adminMutedUsers[profile.id]);
+                      return (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await onToggleMute(profile, isUserMuted);
+                            setActionNotice(`${profile.username} için susturma durumu güncellendi.`);
+                          }}
+                          className={`px-2.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center space-x-1 border ${
+                            isUserMuted
+                              ? 'bg-emerald-500 text-black border-emerald-400 shadow font-extrabold'
+                              : 'bg-[#21262d] hover:bg-[#30363d] text-[#c9d1d9] border-[#30363d]'
+                          }`}
+                          title={isUserMuted ? 'Sessizlik Kilidini Kaldır' : 'Sistem Genelinde Sustur'}
+                        >
+                          {isUserMuted ? <Mic className="w-3.5 h-3.5 fill-black" /> : <MicOff className="w-3.5 h-3.5 text-rose-400" />}
+                          <span>{isUserMuted ? 'Mute Kaldır' : 'Sustur'}</span>
+                        </button>
+                      );
+                    })()}
 
                     {/* Pasife Al / Aktife Çevir */}
                     <button
