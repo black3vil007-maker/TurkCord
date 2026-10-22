@@ -22,9 +22,14 @@ const users = {};
 // Channels config
 const channels = {
   text: [
+    { 
+      id: 'turkcord-updates', 
+      name: 'turkcord-güncellemeler', 
+      description: '📢 Resmi TurkCord yenilikleri, sürüm notları ve duyuruları',
+      isAnnouncement: true 
+    },
     { id: 'genel', name: 'genel-sohbet', description: 'Herkesin sohbet edebileceği ana kanal' },
-    { id: 'oyunlar', name: 'oyun-tavsiyeleri', description: 'Oyun linkleri, taktikler ve sohbet' },
-    { id: 'duyurular', name: 'duyurular', description: 'Sunucu duyuruları' }
+    { id: 'oyunlar', name: 'oyun-tavsiyeleri', description: 'Oyun linkleri, taktikler ve sohbet' }
   ],
   voice: [
     { id: 'voice-lobi', name: 'Lobi', limit: 10 },
@@ -268,18 +273,23 @@ io.on('connection', (socket) => {
     io.emit('textchannel:deleted', { id });
   });
 
-  // Dynamic room creation
-  socket.on('room:create', ({ id, name, limit, created_by }) => {
+  // Dynamic room creation (Preserves password protection for rooms)
+  socket.on('room:create', (roomData) => {
     const user = users[socket.id];
-    if (!name || !name.trim()) return;
+    if (!roomData || !roomData.name || !roomData.name.trim()) return;
 
-    const roomId = id || `room-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const roomId = roomData.id || `room-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const rawPwd = roomData.password ? String(roomData.password).trim() : null;
+    const isProtected = Boolean(roomData.hasPassword || (rawPwd && rawPwd.length > 0));
+
     const newRoom = {
       id: roomId,
-      name: name.trim(),
-      limit: parseInt(limit, 10) || 5,
-      created_by: created_by || (user ? user.id : null),
-      creator: user ? user.username : 'Oyuncu'
+      name: roomData.name.trim(),
+      limit: parseInt(roomData.limit || roomData.limit_count, 10) || 5,
+      created_by: roomData.created_by || (user ? user.id : null),
+      creator: user ? user.username : 'Oyuncu',
+      hasPassword: isProtected,
+      password: isProtected ? rawPwd : null
     };
 
     const existingIdx = channels.voice.findIndex(v => v.id === roomId);
@@ -299,14 +309,22 @@ io.on('connection', (socket) => {
     socket.emit('room:created', newRoom);
   });
 
-  // Dynamic room edit
+  // Dynamic room edit (Preserves password protection)
   socket.on('room:updated', (updatedRoom) => {
     if (!updatedRoom || !updatedRoom.id) return;
+    const rawPwd = updatedRoom.password ? String(updatedRoom.password).trim() : null;
+    const isProtected = Boolean(updatedRoom.hasPassword || (rawPwd && rawPwd.length > 0));
+    const roomObj = {
+      ...updatedRoom,
+      hasPassword: isProtected,
+      password: isProtected ? rawPwd : null
+    };
+
     const idx = channels.voice.findIndex(v => v.id === updatedRoom.id);
     if (idx >= 0) {
-      channels.voice[idx] = { ...channels.voice[idx], ...updatedRoom };
+      channels.voice[idx] = { ...channels.voice[idx], ...roomObj };
     } else {
-      channels.voice.push(updatedRoom);
+      channels.voice.push(roomObj);
     }
     io.emit('channels:updated', channels);
   });

@@ -89,7 +89,7 @@ const saveCustomTextChannels = (channelsList) => {
   } catch (e) {}
 };
 
-const APP_VERSION = 'v1.0.6';
+const APP_VERSION = 'v1.0.7';
 
 export default function App() {
   const [session, setSession] = useState(null);
@@ -397,16 +397,19 @@ export default function App() {
     if (typeof name === 'string' && name.includes(':::pwd:::')) {
       const parts = name.split(':::pwd:::');
       name = parts[0];
-      password = parts[1] || null;
+      if (!password) password = parts[1] || null;
     }
+
+    const cleanPwd = password ? String(password).trim() : null;
+    const hasPassword = Boolean(r.hasPassword || (cleanPwd && cleanPwd.length > 0));
 
     return {
       id: r.id,
       name,
       limit: r.limit_count || r.limit || 5,
-      created_by: r.created_by,
-      password: password || null,
-      hasPassword: Boolean(password && String(password).trim().length > 0)
+      created_by: r.created_by || null,
+      password: cleanPwd,
+      hasPassword
     };
   };
 
@@ -419,7 +422,39 @@ export default function App() {
       if (item && item.id) {
         const parsed = parseRoomData(item);
         const existing = map.get(item.id) || {};
-        map.set(item.id, { ...existing, ...parsed });
+        const mergedPwd = parsed.password || existing.password || null;
+        const mergedHasPwd = Boolean(parsed.hasPassword || existing.hasPassword || (mergedPwd && mergedPwd.length > 0));
+        map.set(item.id, { 
+          ...existing, 
+          ...parsed,
+          created_by: parsed.created_by || existing.created_by || null,
+          password: mergedPwd,
+          hasPassword: mergedHasPwd
+        });
+      }
+    });
+    return Array.from(map.values());
+  };
+
+  const mergeTextChannels = (currentList = [], incomingList = []) => {
+    const map = new Map();
+    DEFAULT_FALLBACK_TEXT_CHANNELS.forEach(c => map.set(c.id, c));
+    (currentList || []).forEach(c => {
+      if (c && c.id) {
+        if (c.id === 'duyurular' || c.id === 'turkcord-updates') {
+          map.set('turkcord-updates', DEFAULT_FALLBACK_TEXT_CHANNELS[0]);
+        } else {
+          map.set(c.id, c);
+        }
+      }
+    });
+    (incomingList || []).forEach(c => {
+      if (c && c.id) {
+        if (c.id === 'duyurular' || c.id === 'turkcord-updates') {
+          map.set('turkcord-updates', DEFAULT_FALLBACK_TEXT_CHANNELS[0]);
+        } else {
+          map.set(c.id, c);
+        }
       }
     });
     return Array.from(map.values());
@@ -1208,7 +1243,7 @@ export default function App() {
 
     socket.on('init:state', (state) => {
       setChannels(prev => ({
-        text: state.channels?.text || prev.text,
+        text: mergeTextChannels(prev.text, state.channels?.text),
         voice: mergeVoiceChannels(prev.voice, state.channels?.voice)
       }));
       setAllUsers(state.users);
@@ -1237,7 +1272,7 @@ export default function App() {
 
     socket.on('channels:updated', (updatedChannels) => {
       setChannels(prev => ({
-        text: updatedChannels.text || prev.text,
+        text: mergeTextChannels(prev.text, updatedChannels.text),
         voice: mergeVoiceChannels(prev.voice, updatedChannels.voice)
       }));
     });
@@ -1486,6 +1521,19 @@ export default function App() {
   const handleJoinVoiceChannel = async (roomId) => {
     if (!roomId) return;
 
+    const targetRoom = (channels.voice || []).find(v => v.id === roomId);
+
+    // Şifreli oda kontrolü: Eğer oda şifreliyse ve kullanıcı yetkili (sahip/admin) değilse veya oturumda henüz girmemişse şifre iste
+    if (targetRoom && targetRoom.hasPassword && !unlockedRooms[roomId]) {
+      const isOwnerOrAdmin = Boolean(currentUser && (isAdmin || (targetRoom.created_by && targetRoom.created_by === currentUser.id)));
+      if (!isOwnerOrAdmin) {
+        setPasswordPromptRoom(targetRoom);
+        setPasswordInput('');
+        setPasswordError('');
+        return;
+      }
+    }
+
     // Zaten bağlı olduğumuz odaya tıklandıysa sekmeyi aç ve dön
     if (activeVoiceChannelRef.current === roomId) {
       setActiveTab('voice');
@@ -1532,7 +1580,6 @@ export default function App() {
     soundEffects.playSelfJoin();
 
     // Oda kişi sınırı (Limit) kontrolü
-    const targetRoom = (channels.voice || []).find(c => c.id === roomId);
     const existingInRoom = voiceRooms[roomId] || [];
     const roomLimit = Number(targetRoom?.limit_count || targetRoom?.limit || 0);
 
@@ -1872,8 +1919,9 @@ export default function App() {
   };
 
   const handleRoomClick = (room) => {
-    // If room is locked, user is not the creator, and hasn't unlocked it yet this session
-    if (room.hasPassword && room.created_by !== currentUser?.id && !unlockedRooms[room.id]) {
+    // If room is locked, user is not the creator or admin, and hasn't unlocked it yet this session
+    const isOwnerOrAdmin = Boolean(currentUser && (isAdmin || (room.created_by && room.created_by === currentUser.id)));
+    if (room.hasPassword && !isOwnerOrAdmin && !unlockedRooms[room.id]) {
       setPasswordPromptRoom(room);
       setPasswordInput('');
       setPasswordError('');
@@ -1968,6 +2016,13 @@ export default function App() {
     e.preventDefault();
     if (!editingRoom || !editingRoom.name.trim()) return;
 
+    const isOwnerOrAdmin = Boolean(currentUser && (isAdmin || (editingRoom.created_by && editingRoom.created_by === currentUser.id)));
+    if (!isOwnerOrAdmin) {
+      alert('Bu odayı düzenleme yetkiniz bulunmamaktadır.');
+      setEditingRoom(null);
+      return;
+    }
+
     const roomId = editingRoom.id;
     const cleanName = editingRoom.name.trim();
     const roomLimit = parseInt(editingRoom.limit, 10) || 5;
@@ -2023,6 +2078,12 @@ export default function App() {
 
   // Delete room
   const handleDeleteRoom = async (roomToDelete) => {
+    const isOwnerOrAdmin = Boolean(currentUser && (isAdmin || (roomToDelete.created_by && roomToDelete.created_by === currentUser.id)));
+    if (!isOwnerOrAdmin) {
+      alert('Bu odayı silme yetkiniz bulunmamaktadır.');
+      return;
+    }
+
     if (!confirm(`"${roomToDelete.name}" odasını kalıcı olarak silmek istediğinizden emin misiniz?`)) {
       return;
     }
@@ -2533,7 +2594,7 @@ export default function App() {
                   const isCurrent = activeVoiceChannel === v.id;
                   const isSelected = selectedVoiceRoomId === v.id;
                   const usersInRoom = voiceRooms[v.id] || [];
-                  const isOwner = v.created_by === currentUser?.id || !v.created_by;
+                  const canManage = Boolean(currentUser && (isAdmin || (v.created_by && v.created_by === currentUser.id)));
 
                   return (
                     <div
@@ -2567,9 +2628,14 @@ export default function App() {
                             <div className="text-sm font-bold text-white flex items-center space-x-1.5 truncate">
                               <span className="truncate">{v.name}</span>
                               {v.hasPassword && (
-                                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-400 font-semibold flex items-center space-x-0.5">
+                                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-400 font-semibold flex items-center space-x-1">
                                   <Lock className="w-2.5 h-2.5" />
                                   <span>Şifreli</span>
+                                  {canManage && v.password && (
+                                    <span className="text-amber-300 font-mono pl-1 border-l border-amber-500/40">
+                                      PIN: {v.password}
+                                    </span>
+                                  )}
                                 </span>
                               )}
                             </div>
@@ -2585,8 +2651,8 @@ export default function App() {
                         </div>
 
                         <div className="flex items-center space-x-1.5">
-                          {/* Düzenle & Sil Butonları (Oda Sahibi veya Giriş Yapanlar) */}
-                          {isOwner && (
+                          {/* Düzenle & Sil Butonları (Sadece Oda Sahibi veya Admin) */}
+                          {canManage && (
                             <div className="hidden group-hover:flex items-center space-x-1 mr-1">
                               <button
                                 type="button"
@@ -2934,7 +3000,20 @@ export default function App() {
                     <Volume2 className="w-5 h-5" />
                   </div>
                   <div>
-                    <h2 className="text-xl font-black text-white">{currentVoiceObj?.name}</h2>
+                    <div className="flex items-center space-x-2">
+                      <h2 className="text-xl font-black text-white">{currentVoiceObj?.name}</h2>
+                      {currentVoiceObj?.hasPassword && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 font-semibold flex items-center space-x-1">
+                          <Lock className="w-3 h-3" />
+                          <span>Şifreli</span>
+                          {(isAdmin || (currentVoiceObj.created_by && currentVoiceObj.created_by === currentUser?.id)) && currentVoiceObj.password && (
+                            <span className="font-mono text-amber-300 pl-1 border-l border-amber-500/40">
+                              PIN: {currentVoiceObj.password}
+                            </span>
+                          )}
+                        </span>
+                      )}
+                    </div>
                     <p className="text-xs text-[#7d8590]">{currentVoiceRoomUsers.length} kişi bu odada konuşuyor</p>
                   </div>
                 </div>
@@ -3297,7 +3376,7 @@ export default function App() {
                   <button
                     key={v.id}
                     disabled={Boolean(joiningRoomId)}
-                    onClick={() => handleJoinVoiceChannel(v.id)}
+                    onClick={() => handleRoomClick(v)}
                     className="px-4 py-2.5 rounded-xl bg-[#21262d] hover:bg-[#30363d] text-white font-bold text-sm transition border border-[#30363d] disabled:opacity-50"
                   >
                     {joiningRoomId === v.id ? 'Bağlanıyor...' : `${v.name}'a Katıl`}
