@@ -170,15 +170,18 @@ class RealtimeSignaling {
     const userVoiceRoomMap = new Map();
 
     Object.values(state).forEach(presences => {
-      // In Supabase Presence, each key has an array of states. Take the latest one.
       presences.forEach(user => {
         if (!user || !user.id) return;
-        onlineMap.set(user.id, user);
-        // Latest voice room state for this user:
+        const existing = onlineMap.get(user.id);
+        if (!existing || (!existing.currentVoiceRoom && user.currentVoiceRoom)) {
+          onlineMap.set(user.id, user);
+        } else if (!existing) {
+          onlineMap.set(user.id, user);
+        }
+
+        // A user is in a room if any active presence session of theirs has an active room
         if (user.currentVoiceRoom) {
           userVoiceRoomMap.set(user.id, user.currentVoiceRoom);
-        } else {
-          userVoiceRoomMap.delete(user.id);
         }
       });
     });

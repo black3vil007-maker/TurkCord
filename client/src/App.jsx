@@ -3632,6 +3632,7 @@ export default function App() {
             onDeleteMessage={handleDeleteChatMessage}
             currentUser={currentUser}
             isAdmin={isAdmin}
+            allUsers={allUsers}
           />
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
@@ -4185,11 +4186,13 @@ function CleanChatView({
   onClearChat,
   onDeleteMessage,
   currentUser,
-  isAdmin
+  isAdmin,
+  allUsers = []
 }) {
   const [inputText, setInputText] = useState('');
   const [pendingImage, setPendingImage] = useState(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [showMemberList, setShowMemberList] = useState(true);
   const [activeEmojiCategory, setActiveEmojiCategory] = useState('gaming');
   const [copiedMessageId, setCopiedMessageId] = useState(null);
   const [lightboxImage, setLightboxImage] = useState(null);
@@ -4197,6 +4200,30 @@ function CleanChatView({
   const endRef = React.useRef(null);
   const fileInputRef = React.useRef(null);
   const emojiPickerRef = React.useRef(null);
+
+  // Kanal ve odada olan kişiler listesi
+  const roomMembers = useMemo(() => {
+    const list = Array.isArray(allUsers) ? [...allUsers] : [];
+    if (currentUser && !list.some(u => (u.id && currentUser.id && u.id === currentUser.id) || (u.username && currentUser.username && u.username.toLowerCase() === currentUser.username.toLowerCase()))) {
+      list.push(currentUser);
+    }
+    return list.map(u => ({
+      ...u,
+      isUserAdmin: Boolean(
+        u.isAdmin || 
+        u.is_admin || 
+        (u.username && u.username.toLowerCase() === 'admin') ||
+        (u.email && u.email.toLowerCase().includes('aerayyoruk'))
+      )
+    })).sort((a, b) => {
+      if (a.isUserAdmin && !b.isUserAdmin) return -1;
+      if (!a.isUserAdmin && b.isUserAdmin) return 1;
+      return (a.username || '').localeCompare(b.username || '');
+    });
+  }, [allUsers, currentUser]);
+
+  const adminMembers = roomMembers.filter(u => u.isUserAdmin);
+  const regularMembers = roomMembers.filter(u => !u.isUserAdmin);
 
   const isAnnouncementChannel = channel?.isAnnouncement || channel?.id === 'turkcord-updates';
 
@@ -4285,18 +4312,34 @@ function CleanChatView({
   };
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-hidden relative">
-      {/* Üst Başlık Barı */}
-      <div className="h-16 px-6 border-b border-[#30363d] flex items-center justify-between bg-[#161b22]/70 backdrop-blur z-10">
-        <div className="flex items-center space-x-2.5 truncate">
-          <Hash className="w-5 h-5 text-indigo-400 flex-shrink-0" />
-          <span className="font-extrabold text-white text-base truncate">#{channel?.name}</span>
-          <span className="text-xs text-[#7d8590] ml-2 hidden sm:inline truncate border-l border-[#30363d] pl-2.5">
-            {channel?.description || 'Metin sohbet kanalı'}
-          </span>
-        </div>
+    <div className="flex-1 flex h-full overflow-hidden relative">
+      {/* Sol: Sohbet Akışı (Mesajlar & Giriş Alanı) */}
+      <div className="flex-1 flex flex-col h-full overflow-hidden relative min-w-0">
+        {/* Üst Başlık Barı */}
+        <div className="h-16 px-6 border-b border-[#30363d] flex items-center justify-between bg-[#161b22]/70 backdrop-blur z-10 flex-shrink-0">
+          <div className="flex items-center space-x-2.5 truncate">
+            <Hash className="w-5 h-5 text-indigo-400 flex-shrink-0" />
+            <span className="font-extrabold text-white text-base truncate">#{channel?.name}</span>
+            <span className="text-xs text-[#7d8590] ml-2 hidden sm:inline truncate border-l border-[#30363d] pl-2.5">
+              {channel?.description || 'Metin sohbet kanalı'}
+            </span>
+          </div>
 
-        <div className="flex items-center space-x-2">
+          <div className="flex items-center space-x-2">
+            {/* Odada Olan Kişiler Panelini Aç/Kapat Butonu */}
+            <button
+              type="button"
+              onClick={() => setShowMemberList(prev => !prev)}
+              className={`p-2 px-3 rounded-xl transition flex items-center space-x-1.5 text-xs font-bold ${
+                showMemberList 
+                  ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/40 hover:bg-indigo-600/30' 
+                  : 'bg-[#21262d] text-[#7d8590] hover:text-white border border-[#30363d]'
+              }`}
+              title="Kanalda/Odada Olan Kişileri Göster / Gizle"
+            >
+              <Users className="w-4 h-4 text-indigo-400" />
+              <span className="hidden sm:inline">Odada Olanlar ({roomMembers.length})</span>
+            </button>
           {/* Bildirim Sesi Aç / Kapat Butonu */}
           <button
             type="button"
@@ -4778,6 +4821,85 @@ function CleanChatView({
           </form>
         )}
       </div>
+      </div>
+
+      {/* Sağ: Discord Tarzı Odada Olan Kişiler Paneli */}
+      {showMemberList && (
+        <aside className="w-60 border-l border-[#30363d] bg-[#161b22]/95 backdrop-blur flex flex-col h-full overflow-hidden flex-shrink-0 animate-in slide-in-from-right-3 duration-150 select-none">
+          <div className="h-16 px-4 border-b border-[#30363d] flex items-center justify-between text-xs font-black tracking-wider text-[#7d8590] flex-shrink-0">
+            <span className="flex items-center space-x-1.5 uppercase">
+              <Users className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Odada Olanlar — {roomMembers.length}</span>
+            </span>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-3 space-y-4">
+            {/* YÖNETİCİLER / ADMIN */}
+            {adminMembers.length > 0 && (
+              <div className="space-y-1.5">
+                <div className="text-[10px] font-black tracking-wider text-amber-400 uppercase flex items-center space-x-1 px-1">
+                  <span>👑 YÖNETİCİLER — {adminMembers.length}</span>
+                </div>
+                {adminMembers.map(u => (
+                  <div
+                    key={u.id || u.socketId || u.username}
+                    className="flex items-center space-x-2.5 p-2 rounded-xl bg-gradient-to-r from-amber-500/15 via-[#21262d] to-transparent border border-amber-500/40 shadow-sm"
+                  >
+                    <div className="relative w-8 h-8 rounded-xl bg-[#0d1117] flex items-center justify-center flex-shrink-0 border border-amber-500/50">
+                      <UserAvatar avatar={u.avatar || '🛡️'} className="w-full h-full rounded-xl" textClassName="text-lg" />
+                      <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-[#161b22] shadow-[0_0_6px_#10b981]" />
+                    </div>
+                    <div className="truncate flex-1">
+                      <div className="flex items-center space-x-1 text-xs font-bold text-amber-300 truncate">
+                        <span className="truncate">{u.username || 'Admin'}</span>
+                        <span className="px-1 py-0.2 rounded bg-amber-500/20 text-amber-400 text-[8px] font-black border border-amber-500/30">ADMIN</span>
+                      </div>
+                      <div className="text-[10px] text-emerald-400 font-medium flex items-center space-x-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        <span>Odada Aktif</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* ÇEVRİMİÇİ ÜYELER */}
+            <div className="space-y-1.5">
+              <div className="text-[10px] font-black tracking-wider text-[#7d8590] uppercase flex items-center space-x-1 px-1">
+                <span>🟢 ÇEVRİMİÇİ ÜYELER — {regularMembers.length}</span>
+              </div>
+              {regularMembers.length === 0 ? (
+                <div className="text-[11px] text-[#7d8590] px-2 py-1 italic">Başka üye yok</div>
+              ) : (
+                regularMembers.map(u => {
+                  const isSelf = u.id === currentUser?.id;
+                  return (
+                    <div
+                      key={u.id || u.socketId || u.username}
+                      className="flex items-center space-x-2.5 p-2 rounded-xl hover:bg-[#21262d] transition group"
+                    >
+                      <div className="relative w-8 h-8 rounded-xl bg-[#21262d] flex items-center justify-center flex-shrink-0 border border-white/5">
+                        <UserAvatar avatar={u.avatar || '🎮'} className="w-full h-full rounded-xl" textClassName="text-lg" />
+                        <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-[#161b22]" />
+                      </div>
+                      <div className="truncate flex-1">
+                        <div className="flex items-center space-x-1 text-xs font-bold text-[#e6edf3] truncate">
+                          <span className="truncate">{u.username}</span>
+                          {isSelf && <span className="text-[10px] text-[#7d8590] font-normal">(Sen)</span>}
+                        </div>
+                        <div className="text-[10px] text-[#7d8590] font-mono">
+                          {u.currentVoiceRoom ? 'Seste 🎙️' : 'Odada Aktif 🟢'}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </aside>
+      )}
 
       {/* Büyük Fotoğraf Açma (Lightbox Modal) */}
       {lightboxImage && (
