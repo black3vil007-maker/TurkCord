@@ -712,7 +712,7 @@ class WebRTCManager {
         if (this.onSpeakingChange) this.onSpeakingChange('self', isSpeaking);
         this.sendSignal('voice:speaking', { isSpeaking });
       }
-    }, 35);
+    }, 50);
   }
 
   // Connect to an existing peer (Caller initiates offer)

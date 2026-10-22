@@ -1,6 +1,6 @@
 {
   "name": "turkcord-desktop",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "TurkCord - eSports Düşük Gecikmeli WebRTC Ses ve Sohbet Masaüstü Uygulaması",
   "main": "main.js",
   "author": "TurkCord Team",
@@ -19,15 +19,21 @@
       "target": [
         "nsis"
       ],
-      "icon": "icon.png"
+      "icon": "icon.png",
+      "requestedExecutionLevel": "asInvoker",
+      "publisherName": "TurkCord Team",
+      "legalTrademarks": "TurkCord",
+      "verifyUpdateCodeSignature": false
     },
     "nsis": {
       "oneClick": false,
+      "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "TurkCord",
-      "artifactName": "TurkCord-Setup.${ext}"
+      "artifactName": "TurkCord-Setup.${ext}",
+      "runAfterFinish": true
     },
     "files": [
       "main.js",
