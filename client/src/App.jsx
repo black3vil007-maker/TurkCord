@@ -2628,14 +2628,9 @@ export default function App() {
                             <div className="text-sm font-bold text-white flex items-center space-x-1.5 truncate">
                               <span className="truncate">{v.name}</span>
                               {v.hasPassword && (
-                                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-400 font-semibold flex items-center space-x-1">
+                                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-400 font-semibold flex items-center space-x-0.5">
                                   <Lock className="w-2.5 h-2.5" />
                                   <span>Şifreli</span>
-                                  {canManage && v.password && (
-                                    <span className="text-amber-300 font-mono pl-1 border-l border-amber-500/40">
-                                      PIN: {v.password}
-                                    </span>
-                                  )}
                                 </span>
                               )}
                             </div>
@@ -3006,12 +3001,24 @@ export default function App() {
                         <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 font-semibold flex items-center space-x-1">
                           <Lock className="w-3 h-3" />
                           <span>Şifreli</span>
-                          {(isAdmin || (currentVoiceObj.created_by && currentVoiceObj.created_by === currentUser?.id)) && currentVoiceObj.password && (
-                            <span className="font-mono text-amber-300 pl-1 border-l border-amber-500/40">
-                              PIN: {currentVoiceObj.password}
-                            </span>
-                          )}
                         </span>
+                      )}
+                      {(isAdmin || (currentVoiceObj?.created_by && currentVoiceObj.created_by === currentUser?.id)) && (
+                        <button
+                          type="button"
+                          onClick={() => setEditingRoom({
+                            id: currentVoiceObj.id,
+                            name: currentVoiceObj.name,
+                            limit: currentVoiceObj.limit,
+                            hasPassword: currentVoiceObj.hasPassword,
+                            password: currentVoiceObj.password || '',
+                            created_by: currentVoiceObj.created_by
+                          })}
+                          className="p-1 rounded-lg text-[#7d8590] hover:text-white hover:bg-[#21262d] transition"
+                          title="Oda Ayarları ve Şifre"
+                        >
+                          <Settings className="w-3.5 h-3.5" />
+                        </button>
                       )}
                     </div>
                     <p className="text-xs text-[#7d8590]">{currentVoiceRoomUsers.length} kişi bu odada konuşuyor</p>
@@ -3691,13 +3698,29 @@ export default function App() {
               </label>
 
               {editingRoom.hasPassword && (
-                <input
-                  type="text"
-                  placeholder="Yeni Oda Şifresi (Örn: 1234)..."
-                  value={editingRoom.password || ''}
-                  onChange={(e) => setEditingRoom({ ...editingRoom, password: e.target.value })}
-                  className="w-full bg-[#0d1117] border border-amber-500/50 rounded-xl px-3.5 py-2 text-xs text-white outline-none"
-                />
+                <div className="space-y-1.5 pt-1">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-bold text-amber-400 flex items-center space-x-1">
+                      <KeyRound className="w-3 h-3" />
+                      <span>Oda Şifresi (Sahip & Admin)</span>
+                    </label>
+                    {editingRoom.password && (
+                      <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                        Aktif: {editingRoom.password}
+                      </span>
+                    )}
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Yeni Oda Şifresi (Örn: 1234)..."
+                    value={editingRoom.password || ''}
+                    onChange={(e) => setEditingRoom({ ...editingRoom, password: e.target.value })}
+                    className="w-full bg-[#0d1117] border border-amber-500/50 focus:border-amber-400 rounded-xl px-3.5 py-2 text-xs text-white font-mono outline-none"
+                  />
+                  <p className="text-[10px] text-[#7d8590]">
+                    🔒 Bu şifre ana ekranlarda görünmez, yalnızca oda sahibi ve admin tarafından bu ayar ekranından görüntülenebilir ve değiştirilebilir.
+                  </p>
+                </div>
               )}
             </div>
 
