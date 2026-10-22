@@ -49,6 +49,7 @@ import SettingsModal from './components/SettingsModal';
 import AdminPanelModal from './components/AdminPanelModal';
 import TurkCordLogo from './components/TurkCordLogo';
 import UserAvatar from './components/UserAvatar';
+import EditProfileModal from './components/EditProfileModal';
 import { realtimeSignaling } from './services/realtimeSignaling';
 
 const DEFAULT_FALLBACK_VOICE_ROOMS = [
@@ -77,7 +78,7 @@ const saveCustomTextChannels = (channelsList) => {
   } catch (e) {}
 };
 
-const APP_VERSION = typeof window !== 'undefined' && window.electronAPI?.version ? `v${window.electronAPI.version}` : 'v1.0.4';
+const APP_VERSION = 'v1.0.4';
 
 export default function App() {
   const [session, setSession] = useState(null);
@@ -114,6 +115,7 @@ export default function App() {
   const [screenShareNotification, setScreenShareNotification] = useState(null);
   const [endedBroadcast, setEndedBroadcast] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showEditProfileModal, setShowEditProfileModal] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState('profile');
   const [livePing, setLivePing] = useState(12);
   const [roomEventToast, setRoomEventToast] = useState(null);
@@ -2729,115 +2731,105 @@ export default function App() {
             </div>
           )}
 
-          {/* Profil Bilgisi & Eylemler (Genişletilmiş, Düzenli 2 Katmanlı Kart) */}
-          <div className="p-2.5 rounded-2xl bg-[#161b22] border border-[#30363d] space-y-2.5 shadow-md">
-            {/* Üst Satır: Avatar, İsim ve Hızlı Eylem Düğmeleri */}
-            <div className="flex items-center justify-between gap-1.5">
-              <div 
-                onClick={() => {
-                  setSettingsInitialTab('profile');
-                  setShowSettings(true);
-                }}
-                className="flex items-center space-x-2 min-w-0 cursor-pointer flex-1 group/user hover:opacity-90 transition"
-                title="Profili Düzenle (Kullanıcı Adı & Avatar)"
-              >
-                <div className="relative flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center shadow">
-                  <UserAvatar avatar={currentUser?.avatar} className="w-8 h-8 rounded-full border border-white/10 group-hover/user:ring-2 ring-indigo-500 transition" textClassName="text-xl" />
-                  <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-[#161b22] shadow-[0_0_6px_#10b981]" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="text-xs font-black text-white truncate flex items-center space-x-1 leading-snug">
-                    <span className="truncate group-hover/user:text-indigo-400 transition">{currentUser?.username || 'Misafir'}</span>
-                    {isAdmin && (
-                      <span className="px-1 py-0.2 rounded bg-amber-500/20 text-amber-400 border border-amber-500/40 text-[8px] font-black tracking-wider flex-shrink-0">
-                        ADMIN
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[10px] text-[#7d8590] group-hover/user:text-indigo-300 flex items-center space-x-0.5 transition">
-                    <Pencil className="w-2.5 h-2.5 text-indigo-400" />
-                    <span>Düzenle</span>
-                  </div>
-                </div>
+          {/* Profil Bilgisi & Eylemler (Discord Tarzı Temiz, Ferah ve Şık Bar) */}
+          <div className="p-2 rounded-2xl bg-[#161b22] border border-[#30363d] flex items-center justify-between gap-1 shadow-md">
+            {/* Sol Taraf: Tıklanabilir Profil Kartı */}
+            <div 
+              onClick={() => setShowEditProfileModal(true)}
+              className="flex items-center space-x-2.5 min-w-0 cursor-pointer flex-1 p-1 -ml-0.5 rounded-xl hover:bg-[#21262d] transition group/user"
+              title="Profilini Düzenle (Avatar & Kullanıcı Adı)"
+            >
+              <div className="relative flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center shadow">
+                <UserAvatar avatar={currentUser?.avatar} className="w-9 h-9 rounded-full border border-white/10 group-hover/user:ring-2 ring-indigo-500 transition" textClassName="text-2xl" />
+                <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-[#161b22] shadow-[0_0_6px_#10b981]" />
               </div>
-
-              {/* Kontrol Butonları */}
-              <div className="flex items-center space-x-0.5 flex-shrink-0">
-                <button
-                  type="button"
-                  onClick={handleToggleMute}
-                  className={`p-1.5 rounded-lg transition ${
-                    currentUser?.isMuted
-                      ? 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30'
-                      : 'text-[#7d8590] hover:text-white hover:bg-[#21262d]'
-                  }`}
-                  title={currentUser?.isMuted ? 'Mikrofonu Aç' : 'Mikrofonu Kapat'}
-                >
-                  {currentUser?.isMuted ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleToggleDeafen}
-                  className={`p-1.5 rounded-lg transition ${
-                    currentUser?.isDeafened
-                      ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30'
-                      : 'text-[#7d8590] hover:text-white hover:bg-[#21262d]'
-                  }`}
-                  title={currentUser?.isDeafened ? 'Kulaklığı Aç' : 'Kulaklığı Kapat'}
-                >
-                  <Headphones className="w-3.5 h-3.5" />
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSettingsInitialTab('audio');
-                    setShowSettings(true);
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-black text-white truncate flex items-center space-x-1 leading-tight">
+                  <span className="truncate group-hover/user:text-indigo-400 transition">{currentUser?.username || 'Misafir'}</span>
+                  {isAdmin && (
+                    <span className="px-1 py-0.2 rounded bg-amber-500/20 text-amber-400 border border-amber-500/40 text-[8px] font-black tracking-wider flex-shrink-0">
+                      ADMIN
+                    </span>
+                  )}
+                </div>
+                <div 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (currentUser?.user_code) {
+                      navigator.clipboard.writeText(currentUser.user_code);
+                      setRoomEventToast({
+                        type: 'join',
+                        text: `ID Kopyalandı: #${currentUser.user_code} 📋`
+                      });
+                      setTimeout(() => setRoomEventToast(null), 2500);
+                    }
                   }}
-                  className="p-1.5 rounded-lg text-[#7d8590] hover:text-white hover:bg-[#21262d] transition"
-                  title="Ses Ayarları"
+                  className="text-[10px] font-mono font-bold text-emerald-400 hover:text-emerald-300 flex items-center space-x-1 mt-0.5 transition cursor-pointer"
+                  title="Tıklayarak 10 Haneli ID'ni Kopyala"
                 >
-                  <Settings className="w-3.5 h-3.5" />
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleSignOut}
-                  className="p-1.5 rounded-lg text-[#7d8590] hover:text-rose-400 hover:bg-[#21262d] transition"
-                  title="Çıkış Yap"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                </button>
+                  <span className="truncate">#{currentUser?.user_code || '------'}</span>
+                  <Copy className="w-2.5 h-2.5 opacity-60 hover:opacity-100 flex-shrink-0" />
+                </div>
               </div>
             </div>
 
-            {/* Alt Satır: 10 Haneli Benzersiz ID (Belirgin, Tam Genişlikte, Tek Tıkla Kopyalama) */}
-            <div 
-              onClick={(e) => {
-                e.stopPropagation();
-                if (currentUser?.user_code) {
-                  navigator.clipboard.writeText(currentUser.user_code);
-                  setRoomEventToast({
-                    type: 'join',
-                    text: `ID Kopyalandı: #${currentUser.user_code} 📋`
-                  });
-                  setTimeout(() => setRoomEventToast(null), 2500);
-                }
-              }}
-              className="flex items-center justify-between px-2.5 py-1 bg-[#0d1117] hover:bg-[#21262d] border border-[#30363d]/80 hover:border-emerald-500/50 rounded-xl cursor-pointer transition group/id shadow-inner"
-              title="Tıklayarak 10 Haneli Arkadaşlık ID'ni Kopyala"
-            >
-              <div className="flex items-center space-x-1.5 min-w-0">
-                <span className="text-[9px] uppercase font-bold text-[#7d8590] tracking-wider">ID:</span>
-                <span className="font-mono text-[11px] font-black text-emerald-400 tracking-wider truncate">
-                  #{currentUser?.user_code || '------'}
-                </span>
-              </div>
-              <div className="flex items-center space-x-1 text-[9px] text-[#7d8590] group-hover/id:text-emerald-300 font-semibold transition flex-shrink-0">
-                <Copy className="w-2.5 h-2.5 text-emerald-400" />
-                <span>Kopyala</span>
-              </div>
+            {/* Sağ Taraf: Eylem Butonları */}
+            <div className="flex items-center space-x-0.5 flex-shrink-0">
+              <button
+                type="button"
+                onClick={handleToggleMute}
+                className={`p-1.5 rounded-lg transition ${
+                  currentUser?.isMuted
+                    ? 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30'
+                    : 'text-[#7d8590] hover:text-white hover:bg-[#21262d]'
+                }`}
+                title={currentUser?.isMuted ? 'Mikrofonu Aç' : 'Mikrofonu Kapat'}
+              >
+                {currentUser?.isMuted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleToggleDeafen}
+                className={`p-1.5 rounded-lg transition ${
+                  currentUser?.isDeafened
+                    ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30'
+                    : 'text-[#7d8590] hover:text-white hover:bg-[#21262d]'
+                }`}
+                title={currentUser?.isDeafened ? 'Kulaklığı Aç' : 'Kulaklığı Kapat'}
+              >
+                <Headphones className="w-4 h-4" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowEditProfileModal(true)}
+                className="p-1.5 rounded-lg text-[#7d8590] hover:text-indigo-400 hover:bg-[#21262d] transition"
+                title="Profili Düzenle"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setSettingsInitialTab('audio');
+                  setShowSettings(true);
+                }}
+                className="p-1.5 rounded-lg text-[#7d8590] hover:text-white hover:bg-[#21262d] transition"
+                title="Ses Ayarları"
+              >
+                <Settings className="w-3.5 h-3.5" />
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSignOut}
+                className="p-1.5 rounded-lg text-[#7d8590] hover:text-rose-400 hover:bg-[#21262d] transition"
+                title="Çıkış Yap"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
             </div>
           </div>
         </div>
@@ -3260,6 +3252,19 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* Edit Profile Modal */}
+      {showEditProfileModal && (
+        <EditProfileModal
+          currentUser={currentUser}
+          onClose={() => setShowEditProfileModal(false)}
+          onUpdateProfile={handleUpdateProfile}
+          onOpenAudioSettings={() => {
+            setSettingsInitialTab('audio');
+            setShowSettings(true);
+          }}
+        />
+      )}
 
       {/* Settings Modal */}
       {showSettings && (
