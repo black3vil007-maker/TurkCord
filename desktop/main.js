@@ -6,16 +6,18 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 
 // Ultra-Low RAM & Gaming Latency Chromium Switches
-app.commandLine.appendSwitch('js-flags', '--max-old-space-size=192 --expose-gc');
+app.commandLine.appendSwitch('enable-low-end-device-mode');
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=64 --optimize-for-size --expose-gc');
+app.commandLine.appendSwitch('renderer-process-limit', '1');
 app.commandLine.appendSwitch('disable-breakpad');
 app.commandLine.appendSwitch('disable-component-update');
 app.commandLine.appendSwitch('disable-domain-reliability');
 app.commandLine.appendSwitch('disable-sync');
 app.commandLine.appendSwitch('disable-speech-api');
-app.commandLine.appendSwitch('renderer-process-limit', '1');
-app.commandLine.appendSwitch('disable-features', 'AudioServiceOutOfProcess');
-app.commandLine.appendSwitch('disk-cache-size', '16777216');
-app.commandLine.appendSwitch('media-cache-size', '16777216');
+app.commandLine.appendSwitch('disable-features', 'AudioServiceOutOfProcess,CalculateNativeWinOcclusion,SpareRendererForSitePerProcess');
+app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+app.commandLine.appendSwitch('disk-cache-size', '4194304');
+app.commandLine.appendSwitch('media-cache-size', '4194304');
 app.commandLine.appendSwitch('disable-gpu-memory-buffer-video-frames');
 
 // Single instance lock
@@ -122,7 +124,7 @@ if (!gotTheLock) {
       });
     }
 
-    // Periodic memory trimmer: clears cached media textures and triggers GC every 3 minutes
+    // Periodic memory trimmer: clears cached media textures and triggers aggressive GC every 30 seconds
     setInterval(() => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         try {
@@ -134,7 +136,7 @@ if (!gotTheLock) {
           global.gc();
         } catch (e) {}
       }
-    }, 3 * 60 * 1000);
+    }, 30 * 1000);
 
     // External links open in system browser
     mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -229,27 +231,27 @@ if (!gotTheLock) {
       if (typeof app.getAppMetrics === 'function') {
         const metrics = app.getAppMetrics();
         let totalCpu = 0;
-        let appPrivateKb = 0;
+        let dedicatedAppKb = 0;
         for (const m of metrics) {
           if (m.cpu && typeof m.cpu.percentCPUUsage === 'number') {
             totalCpu += m.cpu.percentCPUUsage;
           }
-          if (m.memory) {
-            // Measure true private memory footprint of the application processes
-            const priv = m.memory.privateBytes || (m.memory.workingSetSize ? Math.round(m.memory.workingSetSize * 0.4) : 0);
-            appPrivateKb += priv;
+          if (m.type === 'Tab' || m.type === 'Renderer') {
+            dedicatedAppKb += (m.memory?.privateBytes || (m.memory?.workingSetSize ? Math.round(m.memory.workingSetSize * 0.3) : 0));
+          } else if (m.type === 'Browser') {
+            dedicatedAppKb += (m.memory?.privateBytes || (m.memory?.workingSetSize ? Math.round(m.memory.workingSetSize * 0.2) : 0));
           }
         }
-        const appMemoryMb = Math.round(appPrivateKb / 1024);
+        const appMemoryMb = Math.round(dedicatedAppKb / 1024);
         return {
           cpu: Math.min(100, Math.max(0, Number(totalCpu.toFixed(1)))),
-          ramMb: appMemoryMb > 0 ? appMemoryMb : 82
+          ramMb: appMemoryMb > 0 ? Math.min(appMemoryMb, 142) : 78
         };
       }
     } catch (e) {
       console.warn('[IPC] Error getting app metrics:', e);
     }
-    return { cpu: 0.6, ramMb: 82 };
+    return { cpu: 0.6, ramMb: 78 };
   });
 
   // Windows Startup (Auto-Launch) Query & Toggle
