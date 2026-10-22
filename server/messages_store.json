@@ -1,0 +1,17 @@
+{
+  "turkcord-updates": [],
+  "genel": [
+    {
+      "id": "welcome-msg",
+      "sender": {
+        "id": "system",
+        "username": "TurkCord Bot",
+        "avatar": "🤖",
+        "isAdmin": true
+      },
+      "text": "TurkCord sunucusuna hoş geldiniz! Sol menüden ses odalarına katılabilir ve arkadaşlarınızla sıfır gecikmeli sesli/görüntülü sohbet edebilirsiniz.",
+      "timestamp": "2026-10-22T11:39:32.014Z"
+    }
+  ],
+  "oyunlar": []
+}

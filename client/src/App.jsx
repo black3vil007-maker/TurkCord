@@ -1267,7 +1267,22 @@ export default function App() {
         }
       }
       setVoiceRooms(rawRooms);
-      setMessages(state.messages || {});
+      if (state.messages && typeof state.messages === 'object') {
+        setMessages(prev => {
+          const next = { ...prev };
+          for (const [chId, msgs] of Object.entries(state.messages)) {
+            const existing = next[chId] || [];
+            const map = new Map();
+            existing.forEach(m => map.set(m.id, m));
+            (msgs || []).forEach(m => map.set(m.id, m));
+            next[chId] = Array.from(map.values()).sort(
+              (a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime()
+            );
+            saveCachedMessages(chId, next[chId]);
+          }
+          return next;
+        });
+      }
     });
 
     socket.on('channels:updated', (updatedChannels) => {
@@ -1345,6 +1360,10 @@ export default function App() {
 
     socket.on('chat:message', (newMsg) => {
       handleIncomingChatMessage(newMsg);
+    });
+
+    socket.on('chat:message-deleted', ({ channelId, messageId }) => {
+      handleDeleteIncomingMessage(channelId, messageId);
     });
 
     socket.on('chat:clear', ({ channelId }) => {
@@ -1504,6 +1523,7 @@ export default function App() {
       socket.off('users:updated');
       socket.off('voice:rooms-updated');
       socket.off('chat:message');
+      socket.off('chat:message-deleted');
       socket.off('voice:peers');
       socket.off('voice:user-joined');
       socket.off('voice:user-left');
@@ -1801,6 +1821,27 @@ export default function App() {
     realtimeSignaling.sendChatClear(channelId);
     if (socket && socket.connected) {
       socket.emit('chat:clear', { channelId });
+    }
+  };
+
+  const handleDeleteIncomingMessage = (channelId, messageId) => {
+    if (!channelId || !messageId) return;
+    setMessages(prev => {
+      const channelMsgs = prev[channelId] || [];
+      const filtered = channelMsgs.filter(m => m.id !== messageId);
+      saveCachedMessages(channelId, filtered);
+      return {
+        ...prev,
+        [channelId]: filtered
+      };
+    });
+  };
+
+  const handleDeleteChatMessage = (channelId, messageId) => {
+    if (!confirm('Bu güncelleme mesajını kalıcı olarak silmek istediğinizden emin misiniz?')) return;
+    handleDeleteIncomingMessage(channelId, messageId);
+    if (socket && socket.connected) {
+      socket.emit('chat:delete', { channelId, messageId });
     }
   };
 
@@ -3400,6 +3441,7 @@ export default function App() {
             activeVoiceChannel={activeVoiceChannel}
             onGoToVoice={() => setActiveTab('voice')}
             onClearChat={handleClearChatHistory}
+            onDeleteMessage={handleDeleteChatMessage}
             currentUser={currentUser}
             isAdmin={isAdmin}
           />
@@ -3951,6 +3993,7 @@ function CleanChatView({
   activeVoiceChannel, 
   onGoToVoice,
   onClearChat,
+  onDeleteMessage,
   currentUser,
   isAdmin
 }) {
@@ -4155,27 +4198,42 @@ function CleanChatView({
                       </div>
                     </div>
 
-                    {/* Metni Kopyala Butonu */}
-                    {m.text && (
-                      <button
-                        type="button"
-                        onClick={() => handleCopyMessage(m.id || idx, m.text)}
-                        className="px-3 py-1.5 rounded-xl bg-[#21262d] hover:bg-indigo-600/30 text-[#7d8590] hover:text-white border border-[#30363d] transition flex items-center space-x-1.5 text-xs font-bold shadow-sm"
-                        title="Güncelleme Metnini Kopyala"
-                      >
-                        {copiedMessageId === (m.id || idx) ? (
-                          <>
-                            <Check className="w-3.5 h-3.5 text-emerald-400" />
-                            <span className="text-emerald-400 text-[11px]">Kopyalandı</span>
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="w-3.5 h-3.5" />
-                            <span className="text-[11px]">Kopyala</span>
-                          </>
-                        )}
-                      </button>
-                    )}
+                    {/* Üst Sağ Aksiyon Butonları (Admin Sil + Kopyala) */}
+                    <div className="flex items-center space-x-1.5">
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => onDeleteMessage?.(channel?.id || 'turkcord-updates', m.id || idx)}
+                          className="px-2.5 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 border border-rose-500/30 transition flex items-center space-x-1 text-xs font-bold shadow-sm"
+                          title="Bu Güncelleme Notunu Sil"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span className="text-[11px]">Sil</span>
+                        </button>
+                      )}
+
+                      {/* Metni Kopyala Butonu */}
+                      {m.text && (
+                        <button
+                          type="button"
+                          onClick={() => handleCopyMessage(m.id || idx, m.text)}
+                          className="px-3 py-1.5 rounded-xl bg-[#21262d] hover:bg-indigo-600/30 text-[#7d8590] hover:text-white border border-[#30363d] transition flex items-center space-x-1.5 text-xs font-bold shadow-sm"
+                          title="Güncelleme Metnini Kopyala"
+                        >
+                          {copiedMessageId === (m.id || idx) ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 text-emerald-400" />
+                              <span className="text-emerald-400 text-[11px]">Kopyalandı</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3.5 h-3.5" />
+                              <span className="text-[11px]">Kopyala</span>
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   {/* Güncelleme İçerik Gövdesi */}
@@ -4350,10 +4408,114 @@ function CleanChatView({
         )}
 
         {isAnnouncementChannel && !isAdmin ? (
-          <div className="flex items-center justify-center space-x-2.5 p-3 rounded-2xl bg-[#0d1117] border border-[#30363d] text-xs font-semibold text-[#7d8590] select-none shadow-inner">
+          <div className="flex items-center justify-center space-x-2.5 p-3.5 rounded-2xl bg-[#0d1117] border border-[#30363d] text-xs font-semibold text-[#7d8590] select-none shadow-inner">
             <Lock className="w-4 h-4 text-amber-400 flex-shrink-0" />
             <span>Bu kanal yalnızca resmi TurkCord duyuruları ve güncellemeleri içindir. Sadece yöneticiler paylaşım yapabilir.</span>
           </div>
+        ) : isAnnouncementChannel ? (
+          /* ADMIN ÇOK SATIRLI & MADDE İŞARETLİ GÜNCELLEME YAYINLAMA EDİTÖRÜ */
+          <form onSubmit={handleSubmit} onPaste={handlePaste} className="space-y-2.5 bg-[#0d1117] p-3.5 rounded-2xl border border-indigo-500/40 shadow-xl">
+            {/* Hızlı Madde Ekleme ve Başlık Şablonları */}
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-1 border-b border-[#30363d]/60">
+              <div className="flex items-center space-x-2">
+                <span className="font-extrabold text-xs text-indigo-400 flex items-center space-x-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Sürüm Güncelleme Notu Editörü</span>
+                </span>
+                <span className="text-[10px] text-[#7d8590] hidden sm:inline">(Çok satırlı, madde işaretli)</span>
+              </div>
+
+              <div className="flex items-center space-x-1.5">
+                <button
+                  type="button"
+                  onClick={() => setInputText(prev => prev ? `${prev}\n• ` : '• ')}
+                  className="px-2.5 py-1 rounded-lg bg-[#21262d] hover:bg-indigo-600/30 text-indigo-300 hover:text-white border border-indigo-500/30 text-[11px] font-bold transition flex items-center space-x-1 shadow-sm"
+                  title="Yeni Madde Ekle"
+                >
+                  <span className="text-amber-400 font-bold">•</span>
+                  <span>Madde Ekle</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInputText(prev => prev ? `${prev}\n\n🚀 Yenilikler:\n• ` : '🚀 Yenilikler:\n• ')}
+                  className="px-2.5 py-1 rounded-lg bg-[#21262d] hover:bg-emerald-600/30 text-emerald-300 hover:text-white border border-emerald-500/30 text-[11px] font-bold transition hidden sm:flex items-center space-x-1 shadow-sm"
+                  title="Yenilik Başlığı ve Madde"
+                >
+                  <span>🚀 Yenilikler</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInputText(prev => prev ? `${prev}\n\n🛠️ Düzeltmeler:\n• ` : '🛠️ Düzeltmeler:\n• ')}
+                  className="px-2.5 py-1 rounded-lg bg-[#21262d] hover:bg-amber-600/30 text-amber-300 hover:text-white border border-amber-500/30 text-[11px] font-bold transition hidden sm:flex items-center space-x-1 shadow-sm"
+                  title="Düzeltmeler Başlığı ve Madde"
+                >
+                  <span>🛠️ Düzeltmeler</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Çok Satırlı Textarea */}
+            <textarea
+              rows={4}
+              value={inputText}
+              onChange={(e) => setInputText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                  e.preventDefault();
+                  handleSubmit(e);
+                }
+              }}
+              placeholder="📢 Güncelleme notlarını buraya madde madde yazın... (Enter ile alt satıra geçebilirsiniz)&#10;Örnek:&#10;🚀 TurkCord v1.0.8 Güncellemesi:&#10;• Şifreli odalar için güvenlik artırıldı.&#10;• Ses kalitesi 10ms Opus'a optimize edildi."
+              className="w-full bg-[#161b22] border border-[#30363d] focus:border-indigo-400 rounded-xl p-3 text-sm text-white font-medium outline-none transition resize-y min-h-[90px] max-h-[300px] leading-relaxed shadow-inner"
+            />
+
+            {/* Alt Eylemler */}
+            <div className="flex items-center justify-between pt-1">
+              <div className="flex items-center space-x-1.5">
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handleImageFileChange}
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="p-2 px-3 rounded-xl bg-[#161b22] hover:bg-indigo-600/20 text-[#7d8590] hover:text-indigo-400 border border-[#30363d] transition flex items-center space-x-1.5 text-xs font-bold"
+                  title="Görsel Ekle"
+                >
+                  <ImageIcon className="w-4 h-4" />
+                  <span className="hidden sm:inline">Fotoğraf Ekle</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowEmojiPicker(prev => !prev)}
+                  className={`p-2 px-3 rounded-xl border transition flex items-center space-x-1.5 text-xs font-bold ${
+                    showEmojiPicker 
+                      ? 'bg-amber-500/20 text-amber-400 border-amber-500/40' 
+                      : 'bg-[#161b22] text-[#7d8590] hover:text-amber-400 border-[#30363d] hover:bg-[#21262d]'
+                  }`}
+                  title="Emoji Ekle"
+                >
+                  <Smile className="w-4 h-4" />
+                  <span className="hidden sm:inline">Emoji</span>
+                </button>
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <span className="text-[10px] text-[#7d8590] hidden md:inline">Ctrl + Enter ile de yayınlayabilirsiniz</span>
+                <button
+                  type="submit"
+                  disabled={!inputText.trim() && !pendingImage}
+                  className="px-5 py-2.5 rounded-xl text-white font-bold text-xs transition disabled:opacity-40 shadow bg-gradient-to-r from-indigo-600 via-indigo-500 to-purple-600 hover:from-indigo-500 hover:to-purple-500 shadow-indigo-500/30 flex items-center space-x-1.5"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  <span>Güncellemeyi Yayınla</span>
+                </button>
+              </div>
+            </div>
+          </form>
         ) : (
           <form onSubmit={handleSubmit} onPaste={handlePaste} className="flex items-center space-x-2">
             {/* Gizli Dosya Seçici */}
@@ -4394,27 +4556,17 @@ function CleanChatView({
               type="text"
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
-              placeholder={
-                isAnnouncementChannel 
-                  ? '📢 Yeni resmi TurkCord güncelleme notunu buraya yaz...' 
-                  : `#${channel?.name || 'sohbet'} kanalına yaz veya fotoğraf yapıştır...`
-              }
-              className={`flex-1 bg-[#0d1117] border rounded-xl px-4 py-3 text-sm text-white outline-none transition font-medium ${
-                isAnnouncementChannel ? 'border-indigo-500/50 focus:border-indigo-400' : 'border-[#30363d] focus:border-indigo-500'
-              }`}
+              placeholder={`#${channel?.name || 'sohbet'} kanalına yaz veya fotoğraf yapıştır...`}
+              className="flex-1 bg-[#0d1117] border border-[#30363d] focus:border-indigo-500 rounded-xl px-4 py-3 text-sm text-white outline-none transition font-medium"
             />
 
             {/* Gönder Butonu */}
             <button
               type="submit"
               disabled={!inputText.trim() && !pendingImage}
-              className={`px-5 py-3 rounded-xl text-white font-bold text-sm transition disabled:opacity-40 flex-shrink-0 shadow ${
-                isAnnouncementChannel 
-                  ? 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 shadow-indigo-500/30' 
-                  : 'bg-indigo-600 hover:bg-indigo-500'
-              }`}
+              className="px-5 py-3 rounded-xl text-white font-bold text-sm transition disabled:opacity-40 flex-shrink-0 shadow bg-indigo-600 hover:bg-indigo-500"
             >
-              {isAnnouncementChannel ? 'Yayınla' : 'Gönder'}
+              Gönder
             </button>
           </form>
         )}

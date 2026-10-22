@@ -2,6 +2,12 @@ import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(cors());
@@ -39,19 +45,43 @@ const channels = {
   ]
 };
 
-// In-memory text messages: { [channelId]: [ { id, sender, text, timestamp, avatar } ] }
-const channelMessages = {
+// In-memory & disk-persistent text messages: { [channelId]: [ { id, sender, text, timestamp, avatar } ] }
+const MESSAGES_FILE = path.join(__dirname, 'messages_store.json');
+
+let channelMessages = {
+  'turkcord-updates': [],
   'genel': [
     {
       id: 'welcome-msg',
-      sender: { id: 'system', username: 'TurkCord Bot', avatar: '🤖' },
+      sender: { id: 'system', username: 'TurkCord Bot', avatar: '🤖', isAdmin: true },
       text: 'TurkCord sunucusuna hoş geldiniz! Sol menüden ses odalarına katılabilir ve arkadaşlarınızla sıfır gecikmeli sesli/görüntülü sohbet edebilirsiniz.',
       timestamp: new Date().toISOString()
     }
   ],
-  'oyunlar': [],
-  'duyurular': []
+  'oyunlar': []
 };
+
+// Diskten kalıcı sohbet ve güncelleme loglarını yükle
+try {
+  if (fs.existsSync(MESSAGES_FILE)) {
+    const raw = fs.readFileSync(MESSAGES_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      channelMessages = { ...channelMessages, ...parsed };
+      console.log('[Server] Loaded persistent chat and update messages from disk');
+    }
+  }
+} catch (err) {
+  console.warn('[Server] Error loading messages_store.json:', err);
+}
+
+function saveMessagesToDisk() {
+  try {
+    fs.writeFileSync(MESSAGES_FILE, JSON.stringify(channelMessages, null, 2), 'utf8');
+  } catch (err) {
+    console.warn('[Server] Error saving messages_store.json:', err);
+  }
+}
 
 // Voice rooms: { [roomId]: Set of socketIds }
 const voiceRooms = {};
@@ -231,19 +261,37 @@ io.on('connection', (socket) => {
       timestamp: new Date().toISOString()
     };
 
-    // Keep last 100 messages per channel
+    // Keep persistent message log (up to 1000 messages for changelog / history)
     channelMessages[channelId].push(newMsg);
-    if (channelMessages[channelId].length > 100) {
+    if (channelMessages[channelId].length > 1000) {
       channelMessages[channelId].shift();
     }
+    saveMessagesToDisk();
 
     io.emit('chat:message', newMsg);
+  });
+
+  // Chat message delete (Allows admin or sender to delete an update/message)
+  socket.on('chat:delete', ({ channelId, messageId }) => {
+    if (!channelId || !messageId || !channelMessages[channelId]) return;
+    const user = users[socket.id];
+    const idx = channelMessages[channelId].findIndex(m => m.id === messageId);
+    if (idx !== -1) {
+      const msg = channelMessages[channelId][idx];
+      // Allow if admin or message author
+      if (!user || user.isAdmin || (msg.sender && msg.sender.id === user.id)) {
+        channelMessages[channelId].splice(idx, 1);
+        saveMessagesToDisk();
+        io.emit('chat:message-deleted', { channelId, messageId });
+      }
+    }
   });
 
   // Chat clear relay
   socket.on('chat:clear', ({ channelId }) => {
     if (!channelId) return;
     channelMessages[channelId] = [];
+    saveMessagesToDisk();
     io.emit('chat:clear', { channelId });
   });
 
