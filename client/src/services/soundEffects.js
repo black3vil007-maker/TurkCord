@@ -40,12 +40,26 @@ class SoundEffectsManager {
     } catch (e) {}
   }
 
+  setOutputDevice(deviceId) {
+    if (this.ctx && typeof this.ctx.setSinkId === 'function') {
+      try {
+        this.ctx.setSinkId(deviceId === 'default' ? '' : deviceId).catch(() => {});
+      } catch (e) {}
+    }
+  }
+
   getAudioContext() {
     if (!this.isEnabled) return null;
     if (!this.ctx || this.ctx.state === 'closed') {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       if (AudioCtx) {
         this.ctx = new AudioCtx();
+        try {
+          const savedOutput = localStorage.getItem('turkcord_output_device_id');
+          if (savedOutput && savedOutput !== 'default' && typeof this.ctx.setSinkId === 'function') {
+            this.ctx.setSinkId(savedOutput).catch(() => {});
+          }
+        } catch (e) {}
       }
     }
     if (this.ctx && this.ctx.state === 'suspended') {

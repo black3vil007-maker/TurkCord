@@ -1,5 +1,6 @@
 import { socket } from './socket';
 import { realtimeSignaling } from './realtimeSignaling';
+import { soundEffects } from './soundEffects';
 
 const ICE_SERVERS = {
   iceServers: [
@@ -49,6 +50,184 @@ class WebRTCManager {
     this.outputVolume = Number(localStorage.getItem('turkcord_output_volume') || 100);
     this.micGainNode = null;
     this.keyboardFilterShelf = null;
+
+    // Audio Input & Output Device Selection (Persisted)
+    this.selectedInputDeviceId = localStorage.getItem('turkcord_input_device_id') || 'default';
+    this.selectedOutputDeviceId = localStorage.getItem('turkcord_output_device_id') || 'default';
+  }
+
+  // Enumerate all available audio input and output devices
+  async getAudioDevices() {
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+        return { inputs: [], outputs: [] };
+      }
+
+      // Check if devices currently have labels; if not, request permission briefly
+      let devices = await navigator.mediaDevices.enumerateDevices();
+      const hasLabels = devices.some(d => d.label && d.label.length > 0);
+      if (!hasLabels && navigator.mediaDevices.getUserMedia) {
+        try {
+          const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          tempStream.getTracks().forEach(t => t.stop());
+          devices = await navigator.mediaDevices.enumerateDevices();
+        } catch (permErr) {
+          console.warn('[WebRTC] Media permission error while querying device labels:', permErr);
+        }
+      }
+
+      const inputs = devices
+        .filter(d => d.kind === 'audioinput')
+        .map((d, index) => ({
+          deviceId: d.deviceId,
+          label: d.label || `Mikrofon ${index + 1} (${d.deviceId.slice(0, 8)})`
+        }));
+
+      const outputs = devices
+        .filter(d => d.kind === 'audiooutput')
+        .map((d, index) => ({
+          deviceId: d.deviceId,
+          label: d.label || `Hoparlör / Kulaklık ${index + 1} (${d.deviceId.slice(0, 8)})`
+        }));
+
+      return { inputs, outputs };
+    } catch (err) {
+      console.warn('[WebRTC] Error enumerating audio devices:', err);
+      return { inputs: [], outputs: [] };
+    }
+  }
+
+  // Switch microphone input device dynamically without dropping connection
+  async setInputDevice(deviceId) {
+    const targetId = deviceId || 'default';
+    this.selectedInputDeviceId = targetId;
+    try {
+      localStorage.setItem('turkcord_input_device_id', targetId);
+    } catch (e) {}
+
+    // If local stream is active, acquire new stream with new deviceId and hot-swap tracks
+    if (this.rawStream && this.rawStream.active) {
+      try {
+        const audioConstraints = {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+          sampleRate: 48000
+        };
+        if (targetId !== 'default') {
+          audioConstraints.deviceId = { exact: targetId };
+        }
+
+        const newStream = await navigator.mediaDevices.getUserMedia({
+          audio: audioConstraints,
+          video: false
+        });
+
+        const newTrack = newStream.getAudioTracks()[0];
+        if (newTrack) {
+          newTrack.enabled = !this.isMuted;
+          if ('contentHint' in newTrack) newTrack.contentHint = 'speech';
+
+          // Replace track in all active peer connections
+          for (const peer of Object.values(this.peers)) {
+            if (peer.connection) {
+              const senders = peer.connection.getSenders();
+              const audioSender = senders.find(s => s.track && s.track.kind === 'audio');
+              if (audioSender) {
+                await audioSender.replaceTrack(newTrack).catch(e => console.warn('[WebRTC] replaceTrack error:', e));
+              }
+            }
+          }
+
+          // Stop old tracks and update reference
+          this.rawStream.getTracks().forEach(t => t.stop());
+          this.rawStream = newStream;
+          this.localStream = newStream;
+
+          // Reconnect audio analyser for avatar glow
+          try {
+            if (this.audioContext && this.audioContext.state !== 'closed') {
+              const source = this.audioContext.createMediaStreamSource(this.rawStream);
+              this.analyser = this.audioContext.createAnalyser();
+              this.analyser.fftSize = 512;
+              this.analyser.smoothingTimeConstant = 0.2;
+              source.connect(this.analyser);
+              this.setupVAD();
+            }
+          } catch (e) {
+            console.warn('[WebRTC] Analyser reconnect error:', e);
+          }
+        }
+      } catch (err) {
+        console.error('[WebRTC] Failed to switch microphone device:', err);
+      }
+    }
+  }
+
+  // Switch speaker / headphone output device dynamically
+  async setOutputDevice(deviceId) {
+    const targetId = deviceId || 'default';
+    this.selectedOutputDeviceId = targetId;
+    try {
+      localStorage.setItem('turkcord_output_device_id', targetId);
+    } catch (e) {}
+
+    const sinkId = targetId === 'default' ? '' : targetId;
+
+    try {
+      soundEffects.setOutputDevice(targetId);
+    } catch (e) {}
+
+    for (const peer of Object.values(this.peers)) {
+      if (peer.audioEl && typeof peer.audioEl.setSinkId === 'function') {
+        try {
+          await peer.audioEl.setSinkId(sinkId);
+        } catch (e) {
+          console.warn('[WebRTC] Error setting sinkId for peer:', e);
+        }
+      }
+    }
+  }
+
+  // Play a crisp test chime through the selected speaker/headphone
+  async testOutputDevice(deviceId) {
+    try {
+      const targetDevice = deviceId || this.selectedOutputDeviceId || 'default';
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      const ctx = new AudioCtx();
+      if (typeof ctx.setSinkId === 'function' && targetDevice !== 'default') {
+        try {
+          await ctx.setSinkId(targetDevice);
+        } catch (e) {}
+      }
+
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, now); // D5
+      osc.frequency.setValueAtTime(880.00, now + 0.12); // A5
+
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(0.28, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(now);
+      osc.stop(now + 0.5);
+
+      setTimeout(() => {
+        ctx.close().catch(() => {});
+      }, 600);
+      return true;
+    } catch (err) {
+      console.warn('[WebRTC] testOutputDevice error:', err);
+      return false;
+    }
   }
 
   setInputVolume(volumePercent) {
@@ -166,6 +345,11 @@ class WebRTCManager {
       audioEl.style.display = 'none';
       document.body.appendChild(audioEl);
       peer.audioEl = audioEl;
+    }
+
+    // Apply selected output device sinkId if supported
+    if (this.selectedOutputDeviceId && this.selectedOutputDeviceId !== 'default' && typeof audioEl.setSinkId === 'function') {
+      audioEl.setSinkId(this.selectedOutputDeviceId).catch(() => {});
     }
 
     // 2. Set stream directly
@@ -286,14 +470,19 @@ class WebRTCManager {
     }
 
     try {
+      const audioConstraints = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1,
+        sampleRate: 48000
+      };
+      if (this.selectedInputDeviceId && this.selectedInputDeviceId !== 'default') {
+        audioConstraints.deviceId = { exact: this.selectedInputDeviceId };
+      }
+
       this.rawStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          channelCount: 1,
-          sampleRate: 48000
-        },
+        audio: audioConstraints,
         video: false
       });
 
@@ -463,6 +652,9 @@ class WebRTCManager {
     }
     audioEl.muted = this.isDeafened;
     audioEl.srcObject = remoteStream;
+    if (this.selectedOutputDeviceId && this.selectedOutputDeviceId !== 'default' && typeof audioEl.setSinkId === 'function') {
+      audioEl.setSinkId(this.selectedOutputDeviceId).catch(() => {});
+    }
 
     this.peers[peerId] = {
       connection: pc,
@@ -1037,20 +1229,30 @@ class WebRTCManager {
   // Self Mic Loopback Test with real Highpass Filter & Voice Gate (hear mechanical keyboard get muted in real time)
   async startMicTest(onLevel) {
     try {
+      const audioConstraints = {
+        echoCancellation: Boolean(this.audioSettings.echoCancellation),
+        noiseSuppression: Boolean(this.audioSettings.noiseSuppression),
+        autoGainControl: Boolean(this.audioSettings.autoGainControl),
+        googEchoCancellation: Boolean(this.audioSettings.echoCancellation),
+        googNoiseSuppression: Boolean(this.audioSettings.noiseSuppression),
+        googHighpassFilter: true,
+        googTypingNoiseDetection: true
+      };
+      if (this.selectedInputDeviceId && this.selectedInputDeviceId !== 'default') {
+        audioConstraints.deviceId = { exact: this.selectedInputDeviceId };
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: Boolean(this.audioSettings.echoCancellation),
-          noiseSuppression: Boolean(this.audioSettings.noiseSuppression),
-          autoGainControl: Boolean(this.audioSettings.autoGainControl),
-          googEchoCancellation: Boolean(this.audioSettings.echoCancellation),
-          googNoiseSuppression: Boolean(this.audioSettings.noiseSuppression),
-          googHighpassFilter: true,
-          googTypingNoiseDetection: true
-        }
+        audio: audioConstraints
       });
 
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       const testCtx = new AudioCtx({ sampleRate: 48000 });
+      if (this.selectedOutputDeviceId && this.selectedOutputDeviceId !== 'default' && typeof testCtx.setSinkId === 'function') {
+        try {
+          await testCtx.setSinkId(this.selectedOutputDeviceId);
+        } catch (e) {}
+      }
       const source = testCtx.createMediaStreamSource(stream);
 
       // 1. Analyser on raw source

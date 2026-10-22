@@ -48,6 +48,61 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser, init
   const [inputVolume, setInputVolume] = useState(() => webrtc.inputVolume ?? 100);
   const [outputVolume, setOutputVolume] = useState(() => webrtc.outputVolume ?? 100);
 
+  // Audio Device Selection
+  const [inputDevices, setInputDevices] = useState([]);
+  const [outputDevices, setOutputDevices] = useState([]);
+  const [selectedInputId, setSelectedInputId] = useState(() => webrtc.selectedInputDeviceId || 'default');
+  const [selectedOutputId, setSelectedOutputId] = useState(() => webrtc.selectedOutputDeviceId || 'default');
+  const [isPlayingTestSound, setIsPlayingTestSound] = useState(false);
+
+  useEffect(() => {
+    let isMounted = true;
+    const fetchDevices = async () => {
+      try {
+        const { inputs, outputs } = await webrtc.getAudioDevices();
+        if (isMounted) {
+          setInputDevices(inputs);
+          setOutputDevices(outputs);
+        }
+      } catch (e) {
+        console.warn('Failed to load audio devices:', e);
+      }
+    };
+    fetchDevices();
+
+    const handleDeviceChange = () => {
+      fetchDevices();
+    };
+    if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+      navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange);
+    }
+
+    return () => {
+      isMounted = false;
+      if (navigator.mediaDevices && navigator.mediaDevices.removeEventListener) {
+        navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange);
+      }
+    };
+  }, []);
+
+  const handleInputChange = (deviceId) => {
+    setSelectedInputId(deviceId);
+    webrtc.setInputDevice(deviceId);
+  };
+
+  const handleOutputChange = (deviceId) => {
+    setSelectedOutputId(deviceId);
+    webrtc.setOutputDevice(deviceId);
+  };
+
+  const handleTestOutput = async () => {
+    setIsPlayingTestSound(true);
+    await webrtc.testOutputDevice(selectedOutputId);
+    setTimeout(() => {
+      setIsPlayingTestSound(false);
+    }, 600);
+  };
+
   const avatarFileInputRef = useRef(null);
 
   // Audio settings state loaded from webrtc
@@ -209,6 +264,76 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser, init
           {/* TAB 1: SES AYARLARI */}
           {activeTab === 'audio' && (
             <div className="space-y-4 animate-in fade-in duration-150">
+              {/* Giriş & Çıkış Aygıtı Seçimi (Mikrofon & Hoparlör / Kulaklık) */}
+              <div className="bg-[#21262d] p-4 rounded-2xl border border-[#30363d] space-y-4 shadow-sm">
+                <div className="flex items-center justify-between border-b border-[#30363d]/70 pb-2.5">
+                  <div className="flex items-center space-x-2">
+                    <SlidersHorizontal className="w-4 h-4 text-indigo-400" />
+                    <span className="text-xs font-bold text-white uppercase tracking-wide">Ses Donanımı Aygıtları</span>
+                  </div>
+                  <span className="text-[11px] text-[#7d8590]">Ayrı Giriş & Çıkış</span>
+                </div>
+
+                {/* Mikrofon Giriş Aygıtı */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-bold text-[#e6edf3] flex items-center space-x-1.5">
+                      <Mic className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Giriş Aygıtı (Mikrofon)</span>
+                    </label>
+                    {inputDevices.length > 0 && (
+                      <span className="text-[10px] text-emerald-400 font-mono">
+                        {inputDevices.length} Aygıt Aktif
+                      </span>
+                    )}
+                  </div>
+                  <select
+                    value={selectedInputId}
+                    onChange={(e) => handleInputChange(e.target.value)}
+                    className="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500 font-medium"
+                  >
+                    <option value="default">Varsayılan Sistem Mikrofonu</option>
+                    {inputDevices.map((d) => (
+                      <option key={d.deviceId} value={d.deviceId}>
+                        {d.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Hoparlör / Kulaklık Çıkış Aygıtı */}
+                <div className="pt-2 border-t border-[#30363d]/50">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-bold text-[#e6edf3] flex items-center space-x-1.5">
+                      <Headphones className="w-3.5 h-3.5 text-indigo-400" />
+                      <span>Çıkış Aygıtı (Hoparlör / Kulaklık)</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleTestOutput}
+                      disabled={isPlayingTestSound}
+                      className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-indigo-600/20 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-600/30 active:scale-95 transition flex items-center space-x-1"
+                      title="Seçili hoparlör veya kulaklıktan melodik test sesi çal"
+                    >
+                      <Volume2 className={`w-3 h-3 ${isPlayingTestSound ? 'animate-bounce text-indigo-400' : ''}`} />
+                      <span>{isPlayingTestSound ? 'Çalıyor...' : 'Test Sesi Çal'}</span>
+                    </button>
+                  </div>
+                  <select
+                    value={selectedOutputId}
+                    onChange={(e) => handleOutputChange(e.target.value)}
+                    className="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 font-medium"
+                  >
+                    <option value="default">Varsayılan Sistem Çıkışı</option>
+                    {outputDevices.map((d) => (
+                      <option key={d.deviceId} value={d.deviceId}>
+                        {d.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
               {/* Giriş & Çıkış Ses Düzeyleri (Master Sliders) */}
               <div className="bg-[#21262d] p-4 rounded-2xl border border-[#30363d] space-y-4 shadow-sm">
                 {/* Mikrofon Giriş Sesi */}

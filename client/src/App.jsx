@@ -41,6 +41,7 @@ import {
   BellOff,
   Smile,
   Copy,
+  ExternalLink,
   Image as ImageIcon
 } from 'lucide-react';
 import AuthModal from './components/AuthModal';
@@ -78,7 +79,7 @@ const saveCustomTextChannels = (channelsList) => {
   } catch (e) {}
 };
 
-const APP_VERSION = 'v1.0.4';
+const APP_VERSION = 'v1.0.5';
 
 export default function App() {
   const [session, setSession] = useState(null);
@@ -3662,12 +3663,99 @@ const compressImage = (file, maxWidth = 1200, quality = 0.78) => {
   });
 };
 
-const CHAT_EMOJIS = [
-  '🎮', '🔥', '⚡', '🚀', '👑', '💀', '🎉', '🤣', '❤️', '👍',
-  '👏', '👀', '💪', '👾', '🎯', '🍕', '✨', '⭐', '😎', '😂',
-  '🥳', '🤝', '🏆', '💥', '💯', '🗿', '😭', '🤯', '🤡', '🫡',
-  '💣', '⚔️', '🛡️', '🕹️', '🎧', '🍿', '☕', '🥇', '🥈', '🥉'
+// Zengin Kategorili Sohbet Emojileri (Gaming, İfadeler, Jestler, Kutlama)
+const CHAT_EMOJI_CATEGORIES = [
+  {
+    id: 'gaming',
+    name: 'Gaming',
+    icon: '🎮',
+    emojis: [
+      '🎮', '🕹️', '👾', '🎯', '🎲', '🏆', '🥇', '🥈', '🥉', '🎧',
+      '💻', '🖥️', '⚡', '🔥', '🚀', '💣', '⚔️', '🛡️', '🏹', '👑',
+      '💎', '🤖', '🦾', '🔫', '🥇', '🏅', '🔮', '✨'
+    ]
+  },
+  {
+    id: 'faces',
+    name: 'Yüzler',
+    icon: '😂',
+    emojis: [
+      '😂', '🤣', '💀', '😭', '😎', '🥳', '🤩', '😈', '🤡', '🥶',
+      '🥵', '🤯', '😱', '🤫', '🤔', '🧐', '🙄', '😴', '🤐', '🤠',
+      '😇', '😜', '🤤', '🤢', '🤮', '👺', '👻', '👽', '👀', '🗿',
+      '🥺', '😳', '🥴', '🤐', '🥱', '😤'
+    ]
+  },
+  {
+    id: 'gestures',
+    name: 'Jestler',
+    icon: '👍',
+    emojis: [
+      '👍', '👎', '👏', '🙌', '🤝', '✌️', '🤞', '👊', '🤛', '🤜',
+      '🤟', '👌', '🫡', '🤙', '🤌', '💪', '🙏', '👋', '🖕', '💯',
+      '💥', '⭐', '🌟', '🔥'
+    ]
+  },
+  {
+    id: 'party',
+    name: 'Kalp & Keyif',
+    icon: '❤️',
+    emojis: [
+      '❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '🤍', '🤎', '💔',
+      '💖', '💘', '🎉', '🎊', '🎈', '🍾', '🍻', '🍕', '🍔', '🍟',
+      '🍿', '🌮', '🧁', '🍩', '🍫', '☕', '🥤', '💤'
+    ]
+  }
 ];
+
+// Düz liste uyumluluğu için
+const CHAT_EMOJIS = CHAT_EMOJI_CATEGORIES.flatMap(cat => cat.emojis);
+
+// URL regex to match http://, https://, www.* and common web domain patterns
+const CHAT_URL_REGEX = /((?:https?:\/\/|www\.)[^\s<]+|[a-zA-Z0-9][-a-zA-Z0-9]{1,62}\.(?:com|net|org|edu|gov|io|gg|me|tv|co|info|biz|dev|app|xyz)(?:\/[^\s<]*)?)/gi;
+
+function renderMessageWithLinks(text) {
+  if (!text) return null;
+  const parts = text.split(CHAT_URL_REGEX);
+
+  return parts.map((part, index) => {
+    if (!part) return null;
+    if (part.match(CHAT_URL_REGEX)) {
+      // Strip trailing punctuation if user typed www.site.com, or www.site.com!
+      let cleanUrl = part;
+      let trailingPunct = '';
+      const punctMatch = cleanUrl.match(/[.,!?;:)\]]+$/);
+      if (punctMatch) {
+        trailingPunct = punctMatch[0];
+        cleanUrl = cleanUrl.slice(0, -trailingPunct.length);
+      }
+
+      const href = cleanUrl.startsWith('http://') || cleanUrl.startsWith('https://')
+        ? cleanUrl
+        : `https://${cleanUrl}`;
+
+      return (
+        <React.Fragment key={index}>
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => {
+              e.stopPropagation();
+            }}
+            className="text-indigo-400 hover:text-indigo-300 underline font-medium hover:underline break-all inline-flex items-center gap-0.5 group/link cursor-pointer"
+            title={`${href} adresini tarayıcıda aç`}
+          >
+            <span>{cleanUrl}</span>
+            <ExternalLink className="w-3 h-3 inline-block opacity-75 group-hover/link:opacity-100 flex-shrink-0" />
+          </a>
+          {trailingPunct}
+        </React.Fragment>
+      );
+    }
+    return <span key={index}>{part}</span>;
+  });
+}
 
 // Gelişmiş & Modern Metin Sohbet Bileşeni
 function CleanChatView({ 
@@ -3683,11 +3771,23 @@ function CleanChatView({
   const [inputText, setInputText] = useState('');
   const [pendingImage, setPendingImage] = useState(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [activeEmojiCategory, setActiveEmojiCategory] = useState('gaming');
+  const [copiedMessageId, setCopiedMessageId] = useState(null);
   const [lightboxImage, setLightboxImage] = useState(null);
   const [isSoundOn, setIsSoundOn] = useState(() => soundEffects.isChatSoundEnabled);
   const endRef = React.useRef(null);
   const fileInputRef = React.useRef(null);
   const emojiPickerRef = React.useRef(null);
+
+  const handleCopyMessage = (msgId, text) => {
+    if (!text) return;
+    try {
+      navigator.clipboard.writeText(text).then(() => {
+        setCopiedMessageId(msgId);
+        setTimeout(() => setCopiedMessageId(null), 1500);
+      }).catch(() => {});
+    } catch (e) {}
+  };
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -3844,12 +3944,31 @@ function CleanChatView({
                   </span>
                 </div>
 
-                {/* Baloncuk: break-words ve [overflow-wrap:anywhere] ile taşma tamamen önlenir */}
-                <div className="mt-1 leading-relaxed bg-[#161b22] p-3.5 rounded-2xl rounded-tl-none border border-[#30363d] inline-block max-w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] shadow-sm">
+                {/* Baloncuk: break-words ve [overflow-wrap:anywhere] ile taşma tamamen önlenir, sağ tık ve metin seçimi serbest */}
+                <div 
+                  onContextMenu={(e) => e.stopPropagation()}
+                  className="mt-1 leading-relaxed bg-[#161b22] p-3.5 rounded-2xl rounded-tl-none border border-[#30363d] inline-block max-w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] shadow-sm select-text cursor-text group/msg relative pr-8"
+                >
                   {m.text && (
-                    <p className="text-sm text-[#e6edf3] break-words whitespace-pre-wrap [overflow-wrap:anywhere]">
-                      {m.text}
+                    <p className="text-sm text-[#e6edf3] break-words whitespace-pre-wrap [overflow-wrap:anywhere] select-text cursor-text">
+                      {renderMessageWithLinks(m.text)}
                     </p>
+                  )}
+
+                  {/* Metni Kopyala Hızlı Aksiyon Butonu */}
+                  {m.text && (
+                    <button
+                      type="button"
+                      onClick={() => handleCopyMessage(m.id || idx, m.text)}
+                      className="absolute top-2 right-2 p-1 rounded-md bg-[#21262d]/90 hover:bg-[#30363d] text-[#7d8590] hover:text-white opacity-0 group-hover/msg:opacity-100 transition shadow"
+                      title="Metni Kopyala (Ctrl+C)"
+                    >
+                      {copiedMessageId === (m.id || idx) ? (
+                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" />
+                      )}
+                    </button>
                   )}
 
                   {/* Fotoğraf Eklentisi */}
@@ -3905,22 +4024,47 @@ function CleanChatView({
         {showEmojiPicker && (
           <div
             ref={emojiPickerRef}
-            className="absolute bottom-20 left-4 sm:left-6 z-30 p-3 rounded-2xl bg-[#161b22] border-2 border-indigo-500/50 shadow-2xl w-72 max-w-[90vw] animate-in fade-in zoom-in-95"
+            className="absolute bottom-20 left-4 sm:left-6 z-30 p-3 rounded-2xl bg-[#161b22] border-2 border-indigo-500/50 shadow-2xl w-80 max-w-[92vw] animate-in fade-in zoom-in-95"
           >
             <div className="flex items-center justify-between pb-2 border-b border-[#30363d] mb-2 text-xs font-bold text-[#7d8590]">
-              <span>Gaming & Sohbet Emojileri</span>
+              <span className="text-white flex items-center space-x-1.5 font-bold">
+                <Smile className="w-4 h-4 text-indigo-400" />
+                <span>Sohbet & Tepki Emojileri</span>
+              </span>
               <button
                 type="button"
                 onClick={() => setShowEmojiPicker(false)}
-                className="hover:text-white"
+                className="hover:text-white p-1 rounded-lg hover:bg-[#21262d] transition"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <div className="grid grid-cols-8 gap-1.5 max-h-48 overflow-y-auto p-1">
-              {CHAT_EMOJIS.map((em) => (
+
+            {/* Kategori Sekmeleri */}
+            <div className="flex items-center space-x-1 mb-2 bg-[#0d1117] p-1 rounded-xl border border-[#30363d]">
+              {CHAT_EMOJI_CATEGORIES.map((cat) => (
                 <button
-                  key={em}
+                  key={cat.id}
+                  type="button"
+                  onClick={() => setActiveEmojiCategory(cat.id)}
+                  className={`flex-1 py-1 px-1.5 rounded-lg text-xs font-bold transition flex items-center justify-center space-x-1 ${
+                    activeEmojiCategory === cat.id
+                      ? 'bg-indigo-600 text-white shadow'
+                      : 'text-[#7d8590] hover:text-white hover:bg-[#21262d]'
+                  }`}
+                  title={cat.name}
+                >
+                  <span>{cat.icon}</span>
+                  <span className="hidden sm:inline text-[10px] truncate">{cat.name}</span>
+                </button>
+              ))}
+            </div>
+
+            {/* Emoji Izgarası */}
+            <div className="grid grid-cols-7 sm:grid-cols-8 gap-1.5 max-h-52 overflow-y-auto p-1 scrollbar-thin">
+              {(CHAT_EMOJI_CATEGORIES.find(c => c.id === activeEmojiCategory)?.emojis || CHAT_EMOJIS).map((em, eIdx) => (
+                <button
+                  key={`${em}-${eIdx}`}
                   type="button"
                   onClick={() => handleAddEmoji(em)}
                   className="w-8 h-8 rounded-lg hover:bg-indigo-600/30 flex items-center justify-center text-lg hover:scale-125 transition"
