@@ -214,6 +214,15 @@ if (!gotTheLock) {
   }
 
   // System & Process Performance Metrics (Accurate Dedicated Application RAM)
+  ipcMain.handle('app:toggle-fullscreen', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      const next = !mainWindow.isFullScreen();
+      mainWindow.setFullScreen(next);
+      return next;
+    }
+    return false;
+  });
+
   ipcMain.handle('app:get-metrics', async () => {
     try {
       if (typeof app.getAppMetrics === 'function') {

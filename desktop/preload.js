@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   isElectron: true,
   platform: process.platform,
   version: '1.0.13',
+  toggleFullscreen: () => ipcRenderer.invoke('app:toggle-fullscreen'),
   getMetrics: () => ipcRenderer.invoke('app:get-metrics'),
   getAutoLaunch: () => ipcRenderer.invoke('app:get-auto-launch'),
   setAutoLaunch: (enable) => ipcRenderer.invoke('app:set-auto-launch', enable),

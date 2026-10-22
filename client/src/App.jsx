@@ -5392,13 +5392,22 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
 
   const toggleFullscreen = () => {
     if (!isFullscreen) {
-      try {
-        if (document.documentElement.requestFullscreen) {
-          document.documentElement.requestFullscreen().catch(() => {});
-        }
-      } catch (e) {}
+      if (window.electronAPI?.toggleFullscreen) {
+        window.electronAPI.toggleFullscreen().catch(() => {});
+      } else {
+        try {
+          if (containerRef.current?.requestFullscreen) {
+            containerRef.current.requestFullscreen().catch(() => {});
+          } else if (document.documentElement.requestFullscreen) {
+            document.documentElement.requestFullscreen().catch(() => {});
+          }
+        } catch (e) {}
+      }
       setIsFullscreen(true);
     } else {
+      if (window.electronAPI?.toggleFullscreen) {
+        window.electronAPI.toggleFullscreen().catch(() => {});
+      }
       if (document.fullscreenElement) {
         try { document.exitFullscreen().catch(() => {}); } catch (e) {}
       }
@@ -5457,7 +5466,7 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
       ref={containerRef}
       className={`overflow-hidden bg-black flex items-center justify-center shadow-2xl group select-none ${
         isFullscreen
-          ? 'fixed inset-0 top-0 left-0 right-0 bottom-0 z-[999999] w-screen h-screen m-0 p-0 rounded-none border-none'
+          ? 'fixed inset-0 top-0 left-0 right-0 bottom-0 z-[99999999] w-screen h-screen m-0 p-0 rounded-none border-none'
           : isTheater
           ? 'relative my-2 w-full flex-1 min-h-[60vh] max-h-[82vh] rounded-3xl border-2 border-indigo-500/50 transition-all'
           : 'relative my-3 w-full aspect-video max-h-[52vh] mx-auto rounded-3xl border-2 border-indigo-500/40 transition-all'
@@ -5472,7 +5481,7 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
         height: '100vh',
         maxWidth: '100vw',
         maxHeight: '100vh',
-        zIndex: 999999,
+        zIndex: 99999999,
         margin: 0,
         padding: 0,
         backgroundColor: '#000000'
