@@ -89,7 +89,7 @@ const saveCustomTextChannels = (channelsList) => {
   } catch (e) {}
 };
 
-const APP_VERSION = 'v1.0.10';
+const APP_VERSION = 'v1.0.11';
 
 export default function App() {
   const [session, setSession] = useState(null);
@@ -1426,6 +1426,12 @@ export default function App() {
         });
         setTimeout(() => setScreenShareNotification(null), 6000);
       }
+      setPeers({ ...webrtc.peers });
+    };
+
+    webrtc.onLocalScreenShareEnded = () => {
+      setIsScreenSharing(false);
+      setScreenStream(null);
       setPeers({ ...webrtc.peers });
     };
 
@@ -3469,7 +3475,7 @@ export default function App() {
                 }
 
                 const peerWithVideo = Object.entries(peers).find(([_, p]) =>
-                  p.remoteStream && p.remoteStream.getVideoTracks().some(t => t.readyState === 'live' && !t.muted)
+                  p.remoteStream && p.remoteStream.getVideoTracks().some(t => t.readyState === 'live')
                 );
 
                 if (peerWithVideo) {
@@ -3921,7 +3927,7 @@ export default function App() {
                 Kurulum sihirbazı otomatik başlar. Masaüstü kısayolu oluşturulur.
               </p>
               <a
-                href="https://github.com/black3vil007-maker/TurkCord/releases/download/v1.0.10/TurkCord-Setup.exe"
+                href="https://github.com/black3vil007-maker/TurkCord/releases/download/v1.0.11/TurkCord-Setup.exe"
                 download="TurkCord-Setup.exe"
                 target="_blank"
                 rel="noopener noreferrer"
@@ -5136,16 +5142,16 @@ function ScreenSharePlayer({ stream, isLocal, broadcasterName, currentResolution
     };
 
     videoTrack.addEventListener('ended', handleEnded);
-    videoTrack.addEventListener('mute', () => {
-      setTimeout(() => {
-        if (videoTrack.readyState === 'ended' || videoTrack.muted) {
-          handleEnded();
-        }
-      }, 400);
-    });
+    const handleUnmute = () => {
+      if (videoRef.current && videoRef.current.paused) {
+        videoRef.current.play().catch(() => {});
+      }
+    };
+    videoTrack.addEventListener('unmute', handleUnmute);
 
     return () => {
       videoTrack.removeEventListener('ended', handleEnded);
+      videoTrack.removeEventListener('unmute', handleUnmute);
     };
   }, [stream]);
 

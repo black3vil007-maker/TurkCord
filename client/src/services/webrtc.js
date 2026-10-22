@@ -35,6 +35,7 @@ class WebRTCManager {
     this.onSpeakingChange = null;
     this.onSignal = null;
     this.onRemoteScreenShareStopped = null;
+    this.onLocalScreenShareEnded = null;
 
     // Audio & Noise Reduction Settings
     this.audioSettings = this.loadAudioSettings();
@@ -986,31 +987,39 @@ class WebRTCManager {
       cursor: 'always'
     };
 
-    if (targetQuality === '1080p-120' || targetQuality === '120fps' || targetQuality === 'auto' || targetQuality === '1080p') {
-      videoConstraints.width = { ideal: 1920, max: 1920 };
-      videoConstraints.height = { ideal: 1080, max: 1080 };
-      videoConstraints.frameRate = { ideal: 120, max: 120 };
+    if (targetQuality === '1080p-120' || targetQuality === '120fps') {
+      videoConstraints.width = { ideal: 1920 };
+      videoConstraints.height = { ideal: 1080 };
+      videoConstraints.frameRate = { ideal: 60, max: 120 };
+    } else if (targetQuality === '1080p' || targetQuality === 'auto') {
+      videoConstraints.width = { ideal: 1920 };
+      videoConstraints.height = { ideal: 1080 };
+      videoConstraints.frameRate = { ideal: 60 };
     } else if (targetQuality === '720p') {
-      videoConstraints.width = { ideal: 1280, max: 1280 };
-      videoConstraints.height = { ideal: 720, max: 720 };
-      videoConstraints.frameRate = { ideal: 60, max: 60 };
+      videoConstraints.width = { ideal: 1280 };
+      videoConstraints.height = { ideal: 720 };
+      videoConstraints.frameRate = { ideal: 60 };
     } else if (targetQuality === '480p') {
-      videoConstraints.width = { ideal: 854, max: 854 };
-      videoConstraints.height = { ideal: 480, max: 480 };
-      videoConstraints.frameRate = { ideal: 30, max: 30 };
+      videoConstraints.width = { ideal: 854 };
+      videoConstraints.height = { ideal: 480 };
+      videoConstraints.frameRate = { ideal: 30 };
     } else {
-      videoConstraints.frameRate = { ideal: 120, max: 120 };
+      videoConstraints.frameRate = { ideal: 60 };
     }
 
     try {
-      this.screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: videoConstraints,
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
-      });
+      try {
+        this.screenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: videoConstraints,
+          audio: true
+        });
+      } catch (audioErr) {
+        console.warn('[WebRTC] System audio unavailable, falling back to video-only capture:', audioErr);
+        this.screenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: videoConstraints,
+          audio: false
+        });
+      }
 
       const videoTrack = this.screenStream.getVideoTracks()[0];
       if (videoTrack && 'contentHint' in videoTrack) {
@@ -1064,6 +1073,7 @@ class WebRTCManager {
       if (socket && socket.connected) {
         socket.emit('voice:screenshare-toggle', { isSharing: false });
       }
+      if (this.onLocalScreenShareEnded) { try { this.onLocalScreenShareEnded(); } catch(e){} }
       if (this.onPeersChange) this.onPeersChange({ ...this.peers });
     }
   }
@@ -1136,7 +1146,7 @@ class WebRTCManager {
       }
 
       // Maintain full resolution without dropping to pixelated downscales
-      params.degradationPreference = 'maintain-resolution';
+      params.degradationPreference = 'balanced';
 
       if (quality === '1080p-120' || quality === '120fps') {
         params.encodings[0].scaleResolutionDownBy = 1.0;
