@@ -5,23 +5,17 @@ const https = require('https');
 const { spawn } = require('child_process');
 const fs = require('fs');
 
-// Ultra-Low RAM & Gaming Latency Chromium Switches
+// Low RAM & Gaming Latency Chromium Switches
 app.commandLine.appendSwitch('enable-low-end-device-mode');
-app.commandLine.appendSwitch('js-flags', '--max-old-space-size=64 --optimize-for-size --expose-gc');
-app.commandLine.appendSwitch('renderer-process-limit', '1');
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=128 --expose-gc');
+app.commandLine.appendSwitch('renderer-process-limit', '2');
 app.commandLine.appendSwitch('disable-breakpad');
 app.commandLine.appendSwitch('disable-component-update');
 app.commandLine.appendSwitch('disable-domain-reliability');
 app.commandLine.appendSwitch('disable-sync');
-app.commandLine.appendSwitch('disable-speech-api');
-app.commandLine.appendSwitch('disable-features', 'AudioServiceOutOfProcess,CalculateNativeWinOcclusion,SpareRendererForSitePerProcess,VideoCaptureServiceInUtilityProcess');
-app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
-app.commandLine.appendSwitch('disable-gpu-rasterization');
-app.commandLine.appendSwitch('disable-accelerated-2d-canvas');
-app.commandLine.appendSwitch('disable-zero-copy');
-app.commandLine.appendSwitch('disk-cache-size', '4194304');
-app.commandLine.appendSwitch('media-cache-size', '4194304');
-app.commandLine.appendSwitch('disable-gpu-memory-buffer-video-frames');
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,SpareRendererForSitePerProcess');
+app.commandLine.appendSwitch('disk-cache-size', '8388608');
+app.commandLine.appendSwitch('media-cache-size', '8388608');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 // Single instance lock

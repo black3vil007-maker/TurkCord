@@ -137,11 +137,11 @@ export default function App() {
       }
 
       // Web Fallback: performance.memory if supported or ultra-lightweight estimation
-      let memMb = 196;
+      let memMb = 195;
       if (typeof performance !== 'undefined' && performance.memory && performance.memory.usedJSHeapSize) {
-        memMb = 185 + Math.round((performance.memory.usedJSHeapSize / (1024 * 1024)) * 0.35);
+        memMb = Math.round(performance.memory.usedJSHeapSize / (1024 * 1024));
       } else {
-        memMb = 194 + Math.floor(Math.sin(Date.now() / 8000) * 8);
+        memMb = 195 + Math.floor(Math.sin(Date.now() / 8000) * 8);
       }
       const cpuVal = Number((0.6 + Math.abs(Math.sin(Date.now() / 5000)) * 0.9).toFixed(1));
       setSystemMetrics({ cpu: cpuVal, ramMb: memMb });
@@ -1553,19 +1553,6 @@ export default function App() {
       }
     };
 
-    webrtc.onPeerNeedsReconnect = (peerId) => {
-      const activeRoom = activeVoiceChannelRef.current;
-      const myId = currentUserRef.current?.id;
-      if (!activeRoom || !myId || !peerId) return;
-      const occupants = voiceRooms[activeRoom] || [];
-      const isStillInRoom = occupants.some(u => u.id === peerId);
-      if (isStillInRoom) {
-        console.log('[WebRTC Auto-Recover] Re-initiating connection to:', peerId);
-        const amIInitiator = String(myId) > String(peerId);
-        webrtc.createPeerConnection(peerId, amIInitiator);
-      }
-    };
-
     return () => {
       realtimeSignaling.destroy();
     };
@@ -1588,43 +1575,6 @@ export default function App() {
 
     return () => clearInterval(interval);
   }, [activeVoiceChannel, currentUser?.id]);
-
-  // Instant Audio Mesh Synchronizer: Ensures anyone entering the room immediately connects and plays audio without delay
-  useEffect(() => {
-    if (!activeVoiceChannel || !currentUser?.id) return;
-
-    const syncRoomMesh = async () => {
-      const activeRoom = activeVoiceChannelRef.current;
-      const myId = currentUserRef.current?.id;
-      if (!activeRoom || !myId) return;
-
-      const occupants = voiceRooms[activeRoom] || [];
-      for (const member of occupants) {
-        if (member && member.id && member.id !== myId) {
-          const peerObj = webrtc.peers[member.id];
-          const connState = peerObj?.connection?.connectionState;
-          const isAlive = peerObj && (connState === 'connected' || connState === 'connecting');
-
-          if (!isAlive) {
-            const amIInitiator = String(myId) > String(member.id);
-            if (amIInitiator) {
-              console.log('[Audio Mesh Sync] Establishing immediate connection to room occupant:', member.username || member.id);
-              await webrtc.createPeerConnection(member.id, true);
-            }
-          } else if (peerObj?.audioEl) {
-            // Guarantee unmuted playout
-            if (peerObj.audioEl.paused) {
-              peerObj.audioEl.play().catch(() => {});
-            }
-          }
-        }
-      }
-    };
-
-    syncRoomMesh();
-    const meshSyncTimer = setInterval(syncRoomMesh, 2000);
-    return () => clearInterval(meshSyncTimer);
-  }, [activeVoiceChannel, voiceRooms, currentUser?.id]);
 
   // 4. Socket & WebRTC setup (Local & Fallback)
   useEffect(() => {
@@ -2055,20 +2005,6 @@ export default function App() {
 
       // 4. Cloud presence update
       await realtimeSignaling.setVoiceRoom(roomId);
-
-      // 5. Establish immediate audio connection with all existing room members
-      const occupantsToConnect = voiceRooms[roomId] || [];
-      occupantsToConnect.forEach(async (member) => {
-        if (member && member.id && member.id !== currentUserRef.current?.id) {
-          const amIInitiator = String(currentUserRef.current.id) > String(member.id);
-          const peerObj = webrtc.peers[member.id];
-          const isAlive = peerObj && ['connected', 'connecting'].includes(peerObj.connection?.connectionState);
-          if (amIInitiator && !isAlive) {
-            console.log('[Voice Join] Instant mesh connection to occupant:', member.username || member.id);
-            await webrtc.createPeerConnection(member.id, true);
-          }
-        }
-      });
 
       if (voiceTransitionSeqRef.current !== currentSeq) {
         console.log('[Voice] Join superseded after setVoiceRoom:', roomId);
