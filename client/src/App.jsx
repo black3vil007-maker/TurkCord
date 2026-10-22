@@ -209,10 +209,19 @@ export default function App() {
     // 1. Instant local cache load
     const cached = loadCachedMessages(activeTextChannel);
     if (cached && cached.length > 0) {
-      setMessages(prev => ({
-        ...prev,
-        [activeTextChannel]: cached
-      }));
+      setMessages(prev => {
+        const current = prev[activeTextChannel] || [];
+        const map = new Map();
+        cached.forEach(m => map.set(m.id, m));
+        current.forEach(m => map.set(m.id, m));
+        const merged = Array.from(map.values()).sort(
+          (a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime()
+        );
+        return {
+          ...prev,
+          [activeTextChannel]: merged
+        };
+      });
     }
 
     // 2. Fetch persistent log from Supabase database
@@ -1838,7 +1847,7 @@ export default function App() {
   };
 
   const handleDeleteChatMessage = (channelId, messageId) => {
-    if (!confirm('Bu güncelleme mesajını kalıcı olarak silmek istediğinizden emin misiniz?')) return;
+    if (!confirm('Bu mesajı kalıcı olarak silmek istediğinizden emin misiniz?')) return;
     handleDeleteIncomingMessage(channelId, messageId);
     if (socket && socket.connected) {
       socket.emit('chat:delete', { channelId, messageId });
@@ -4277,7 +4286,7 @@ function CleanChatView({
                   {/* Baloncuk: break-words ve [overflow-wrap:anywhere] ile taşma tamamen önlenir, sağ tık ve metin seçimi serbest */}
                   <div 
                     onContextMenu={(e) => e.stopPropagation()}
-                    className="mt-1 leading-relaxed bg-[#161b22] p-3.5 rounded-2xl rounded-tl-none border border-[#30363d] inline-block max-w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] shadow-sm select-text cursor-text group/msg relative pr-8"
+                    className="mt-1 leading-relaxed bg-[#161b22] p-3.5 rounded-2xl rounded-tl-none border border-[#30363d] inline-block max-w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] shadow-sm select-text cursor-text group/msg relative pr-14"
                   >
                     {m.text && (
                       <p className="text-sm text-[#e6edf3] break-words whitespace-pre-wrap [overflow-wrap:anywhere] select-text cursor-text">
@@ -4285,21 +4294,36 @@ function CleanChatView({
                       </p>
                     )}
 
-                    {/* Metni Kopyala Hızlı Aksiyon Butonu */}
-                    {m.text && (
-                      <button
-                        type="button"
-                        onClick={() => handleCopyMessage(m.id || idx, m.text)}
-                        className="absolute top-2 right-2 p-1 rounded-md bg-[#21262d]/90 hover:bg-[#30363d] text-[#7d8590] hover:text-white opacity-0 group-hover/msg:opacity-100 transition shadow"
-                        title="Metni Kopyala (Ctrl+C)"
-                      >
-                        {copiedMessageId === (m.id || idx) ? (
-                          <Check className="w-3.5 h-3.5 text-emerald-400" />
-                        ) : (
-                          <Copy className="w-3.5 h-3.5" />
-                        )}
-                      </button>
-                    )}
+                    {/* Aksiyon Butonları (Kendi Mesajını / Admin Silme & Kopyala) */}
+                    <div className="absolute top-2 right-2 flex items-center space-x-1 opacity-0 group-hover/msg:opacity-100 transition z-10">
+                      {/* Sil Butonu: Kullanıcı kendi mesajını silebilir veya admin silebilir */}
+                      {(isAdmin || (currentUser?.id && m.sender?.id && String(currentUser.id) === String(m.sender.id))) && (
+                        <button
+                          type="button"
+                          onClick={() => onDeleteMessage?.(channel?.id, m.id || idx)}
+                          className="p-1 rounded-md bg-[#21262d]/90 hover:bg-rose-600 text-[#7d8590] hover:text-white transition shadow"
+                          title="Mesajı Sil"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+
+                      {/* Metni Kopyala Hızlı Aksiyon Butonu */}
+                      {m.text && (
+                        <button
+                          type="button"
+                          onClick={() => handleCopyMessage(m.id || idx, m.text)}
+                          className="p-1 rounded-md bg-[#21262d]/90 hover:bg-[#30363d] text-[#7d8590] hover:text-white transition shadow"
+                          title="Metni Kopyala (Ctrl+C)"
+                        >
+                          {copiedMessageId === (m.id || idx) ? (
+                            <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      )}
+                    </div>
 
                     {/* Fotoğraf Eklentisi */}
                     {m.image && (

@@ -279,7 +279,8 @@ io.on('connection', (socket) => {
     if (idx !== -1) {
       const msg = channelMessages[channelId][idx];
       // Allow if admin or message author
-      if (!user || user.isAdmin || (msg.sender && msg.sender.id === user.id)) {
+      const isAuthor = msg.sender && (msg.sender.id === user?.id || String(msg.sender.id) === String(user?.id));
+      if (!user || user.isAdmin || isAuthor) {
         channelMessages[channelId].splice(idx, 1);
         saveMessagesToDisk();
         io.emit('chat:message-deleted', { channelId, messageId });
