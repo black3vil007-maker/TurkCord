@@ -89,7 +89,7 @@ const saveCustomTextChannels = (channelsList) => {
   } catch (e) {}
 };
 
-const APP_VERSION = 'v1.0.11';
+const APP_VERSION = 'v1.0.12';
 
 export default function App() {
   const [session, setSession] = useState(null);
@@ -3958,7 +3958,7 @@ export default function App() {
                 Kurulum sihirbazı otomatik başlar. Masaüstü kısayolu oluşturulur.
               </p>
               <a
-                href="https://github.com/black3vil007-maker/TurkCord/releases/download/v1.0.11/TurkCord-Setup.exe"
+                href="https://github.com/black3vil007-maker/TurkCord/releases/download/v1.0.12/TurkCord-Setup.exe"
                 download="TurkCord-Setup.exe"
                 target="_blank"
                 rel="noopener noreferrer"

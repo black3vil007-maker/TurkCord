@@ -980,31 +980,30 @@ class WebRTCManager {
     }
   }
 
-  // Screen sharing toggle with resolution choice (1080p-120, 1080p, 720p, 480p, auto)
-  // Echo cancellation enabled to prevent feedback loops
-  async startScreenShare(targetQuality = '1080p-120') {
+  // Screen sharing toggle with resolution choice (1080p, 720p, 480p, auto)
+  // Low-RAM bounded constraints (30-60 FPS max, prevents multi-gigabyte DirectX memory queues)
+  async startScreenShare(targetQuality = 'auto') {
     let videoConstraints = {
       cursor: 'always'
     };
 
-    if (targetQuality === '1080p-120' || targetQuality === '120fps') {
-      videoConstraints.width = { ideal: 1920 };
-      videoConstraints.height = { ideal: 1080 };
-      videoConstraints.frameRate = { ideal: 60, max: 120 };
-    } else if (targetQuality === '1080p' || targetQuality === 'auto') {
-      videoConstraints.width = { ideal: 1920 };
-      videoConstraints.height = { ideal: 1080 };
-      videoConstraints.frameRate = { ideal: 60 };
+    if (targetQuality === '1080p-120' || targetQuality === '120fps' || targetQuality === '1080p') {
+      videoConstraints.width = { ideal: 1920, max: 1920 };
+      videoConstraints.height = { ideal: 1080, max: 1080 };
+      videoConstraints.frameRate = { ideal: 30, max: 60 };
     } else if (targetQuality === '720p') {
-      videoConstraints.width = { ideal: 1280 };
-      videoConstraints.height = { ideal: 720 };
-      videoConstraints.frameRate = { ideal: 60 };
+      videoConstraints.width = { ideal: 1280, max: 1280 };
+      videoConstraints.height = { ideal: 720, max: 720 };
+      videoConstraints.frameRate = { ideal: 30, max: 60 };
     } else if (targetQuality === '480p') {
-      videoConstraints.width = { ideal: 854 };
-      videoConstraints.height = { ideal: 480 };
-      videoConstraints.frameRate = { ideal: 30 };
+      videoConstraints.width = { ideal: 854, max: 854 };
+      videoConstraints.height = { ideal: 480, max: 480 };
+      videoConstraints.frameRate = { ideal: 30, max: 30 };
     } else {
-      videoConstraints.frameRate = { ideal: 60 };
+      // Auto: smooth balanced 1080p @ 30-60 FPS
+      videoConstraints.width = { ideal: 1920, max: 1920 };
+      videoConstraints.height = { ideal: 1080, max: 1080 };
+      videoConstraints.frameRate = { ideal: 30, max: 60 };
     }
 
     try {
@@ -1145,30 +1144,26 @@ class WebRTCManager {
         params.encodings = [{}];
       }
 
-      // Maintain full resolution without dropping to pixelated downscales
+      // Maintain high resolution with safe memory limits (prevents Chromium memory spikes)
       params.degradationPreference = 'balanced';
 
-      if (quality === '1080p-120' || quality === '120fps') {
+      if (quality === '1080p-120' || quality === '120fps' || quality === '1080p') {
         params.encodings[0].scaleResolutionDownBy = 1.0;
-        params.encodings[0].maxBitrate = 12000000; // 12.0 Mbps for ultra smooth 120 FPS gaming stream
-        params.encodings[0].maxFramerate = 120;
-      } else if (quality === '1080p') {
-        params.encodings[0].scaleResolutionDownBy = 1.0;
-        params.encodings[0].maxBitrate = 8000000; // 8.0 Mbps for razor-sharp 1080p FHD 60 FPS
+        params.encodings[0].maxBitrate = 3500000; // 3.5 Mbps high fidelity 1080p (Discord standard)
         params.encodings[0].maxFramerate = 60;
       } else if (quality === '720p') {
         params.encodings[0].scaleResolutionDownBy = 1.0;
-        params.encodings[0].maxBitrate = 4000000; // 4.0 Mbps for sharp 720p HD
+        params.encodings[0].maxBitrate = 1800000; // 1.8 Mbps clean 720p HD
         params.encodings[0].maxFramerate = 60;
       } else if (quality === '480p') {
         params.encodings[0].scaleResolutionDownBy = 2.0;
-        params.encodings[0].maxBitrate = 1200000; // 1.2 Mbps for SD
+        params.encodings[0].maxBitrate = 800000; // 800 kbps SD
         params.encodings[0].maxFramerate = 30;
       } else {
-        // Auto / Dynamic Adaptive (up to 12 Mbps, max 120 FPS)
+        // Auto / Dynamic Adaptive: capped at 2.5 Mbps & 60 FPS for ultra low RAM usage
         delete params.encodings[0].scaleResolutionDownBy;
-        params.encodings[0].maxBitrate = 12000000;
-        params.encodings[0].maxFramerate = 120;
+        params.encodings[0].maxBitrate = 2500000;
+        params.encodings[0].maxFramerate = 60;
       }
 
       sender.setParameters(params).then(() => {

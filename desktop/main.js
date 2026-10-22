@@ -6,13 +6,16 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 
 // Ultra-Low RAM & Gaming Latency Chromium Switches
-app.commandLine.appendSwitch('js-flags', '--max-old-space-size=160');
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=192 --expose-gc');
 app.commandLine.appendSwitch('disable-breakpad');
 app.commandLine.appendSwitch('disable-component-update');
 app.commandLine.appendSwitch('disable-domain-reliability');
 app.commandLine.appendSwitch('disable-sync');
 app.commandLine.appendSwitch('disable-speech-api');
 app.commandLine.appendSwitch('renderer-process-limit', '2');
+app.commandLine.appendSwitch('disk-cache-size', '16777216');
+app.commandLine.appendSwitch('media-cache-size', '16777216');
+app.commandLine.appendSwitch('disable-gpu-memory-buffer-video-frames');
 
 // Single instance lock
 const gotTheLock = app.requestSingleInstanceLock();
@@ -102,10 +105,10 @@ if (!gotTheLock) {
       return true;
     });
 
-    // Native Screen Sharing Request Handler
+    // Native Screen Sharing Request Handler (Zero-RAM thumbnail generation)
     if (session.defaultSession.setDisplayMediaRequestHandler) {
       session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
-        desktopCapturer.getSources({ types: ['screen', 'window'] }).then((sources) => {
+        desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 } }).then((sources) => {
           if (sources.length > 0) {
             callback({ video: sources[0], audio: 'loopbackWithMute' });
           } else {
@@ -117,6 +120,20 @@ if (!gotTheLock) {
         });
       });
     }
+
+    // Periodic memory trimmer: clears cached media textures and triggers GC every 3 minutes
+    setInterval(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        try {
+          mainWindow.webContents.session.clearCache().catch(() => {});
+        } catch (e) {}
+      }
+      if (typeof global.gc === 'function') {
+        try {
+          global.gc();
+        } catch (e) {}
+      }
+    }, 3 * 60 * 1000);
 
     // External links open in system browser
     mainWindow.webContents.setWindowOpenHandler(({ url }) => {
