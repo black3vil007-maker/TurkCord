@@ -63,6 +63,11 @@ class WebRTCManager {
     this.inputVolume = Number(localStorage.getItem('turkcord_input_volume') || 100);
     this.outputVolume = Number(localStorage.getItem('turkcord_output_volume') || 100);
     this.micGainNode = null;
+
+    // Early ICE Candidate Buffer & Auto-Recovery
+    this.pendingEarlyCandidates = {}; // { [peerId]: RTCIceCandidateInit[] }
+    this.peerDisconnectTimers = {}; // { [peerId]: timeout }
+    this.onPeerNeedsReconnect = null; // (peerId) => void
     this.keyboardFilterShelf = null;
     this.rnnoiseNode = null;
     this.compressor = null;
@@ -373,20 +378,25 @@ class WebRTCManager {
     audioEl.volume = this.isDeafened ? 0 : Math.min(1.0, Math.max(0, effectiveVol / 100));
     audioEl.muted = Boolean(this.isDeafened);
 
-    // 4. Force play
-    const playPromise = audioEl.play();
-    if (playPromise !== undefined) {
-      playPromise.catch(e => {
-        console.warn(`[WebRTC] audioEl autoplay waiting for user interaction for ${peerId}:`, e);
-        const unlock = () => {
-          audioEl.play().catch(() => {});
-          window.removeEventListener('click', unlock);
-          window.removeEventListener('keydown', unlock);
-        };
-        window.addEventListener('click', unlock, { once: true });
-        window.addEventListener('keydown', unlock, { once: true });
-      });
-    }
+    // 4. Force immediate audio play and schedule retries to prevent initial audio silence
+    const forcePlay = () => {
+      const p = audioEl.play();
+      if (p !== undefined) {
+        p.catch(e => {
+          console.warn(`[WebRTC] audioEl autoplay waiting for user interaction for ${peerId}:`, e);
+          const unlock = () => {
+            audioEl.play().catch(() => {});
+            window.removeEventListener('click', unlock);
+            window.removeEventListener('keydown', unlock);
+          };
+          window.addEventListener('click', unlock, { once: true });
+          window.addEventListener('keydown', unlock, { once: true });
+        });
+      }
+    };
+    forcePlay();
+    setTimeout(forcePlay, 80);
+    setTimeout(forcePlay, 350);
   }
 
   loadAudioSettings() {
@@ -949,11 +959,49 @@ class WebRTCManager {
       }
     };
 
-    // Handle connection state changes
+    // Handle connection state changes with grace period and auto-reconnect
     pc.onconnectionstatechange = () => {
       console.log(`[WebRTC] Peer ${peerId} connectionState:`, pc.connectionState);
-      if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+      if (pc.connectionState === 'connected') {
+        if (this.peerDisconnectTimers[peerId]) {
+          clearTimeout(this.peerDisconnectTimers[peerId]);
+          delete this.peerDisconnectTimers[peerId];
+        }
+        if (this.peers[peerId]?.audioEl) {
+          this.peers[peerId].audioEl.play().catch(() => {});
+        }
+      } else if (pc.connectionState === 'disconnected') {
+        console.warn(`[WebRTC] Peer ${peerId} temporarily disconnected, waiting for ICE recovery...`);
+        if (!this.peerDisconnectTimers[peerId]) {
+          this.peerDisconnectTimers[peerId] = setTimeout(() => {
+            if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+              console.warn(`[WebRTC] Peer ${peerId} recovery timeout exceeded, closing for reconnect...`);
+              this.closePeer(peerId);
+              if (this.onPeerNeedsReconnect) {
+                this.onPeerNeedsReconnect(peerId);
+              }
+            }
+            delete this.peerDisconnectTimers[peerId];
+          }, 3500);
+        }
+      } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
         this.closePeer(peerId);
+        if (this.onPeerNeedsReconnect) {
+          this.onPeerNeedsReconnect(peerId);
+        }
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      console.log(`[WebRTC] Peer ${peerId} iceConnectionState:`, pc.iceConnectionState);
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        if (this.peerDisconnectTimers[peerId]) {
+          clearTimeout(this.peerDisconnectTimers[peerId]);
+          delete this.peerDisconnectTimers[peerId];
+        }
+        if (this.peers[peerId]?.audioEl) {
+          this.peers[peerId].audioEl.play().catch(() => {});
+        }
       }
     };
 
@@ -1064,10 +1112,13 @@ class WebRTCManager {
   // Flush queued ICE candidates that arrived before remoteDescription
   async flushPendingCandidates(peerId) {
     const peer = this.peers[peerId];
-    if (!peer || !peer.connection || !peer.pendingCandidates || peer.pendingCandidates.length === 0) return;
-    const candidates = [...peer.pendingCandidates];
-    peer.pendingCandidates = [];
-    for (const cand of candidates) {
+    const early = this.pendingEarlyCandidates[peerId] || [];
+    delete this.pendingEarlyCandidates[peerId];
+    const peerCandidates = peer?.pendingCandidates ? [...peer.pendingCandidates] : [];
+    if (peer) peer.pendingCandidates = [];
+    const all = [...early, ...peerCandidates];
+    if (!peer || !peer.connection || all.length === 0) return;
+    for (const cand of all) {
       try {
         await peer.connection.addIceCandidate(new RTCIceCandidate(cand));
       } catch (e) {
@@ -1078,18 +1129,21 @@ class WebRTCManager {
 
   // Handle incoming ICE candidate with buffering
   async handleCandidate(peerId, candidate) {
+    if (!candidate) return;
     const peer = this.peers[peerId];
-    if (!peer || !peer.connection) return;
-
-    if (peer.connection.remoteDescription && peer.connection.remoteDescription.type) {
+    if (peer && peer.connection && peer.connection.remoteDescription && peer.connection.remoteDescription.type) {
       try {
         await peer.connection.addIceCandidate(new RTCIceCandidate(candidate));
       } catch (e) {
         console.warn('[WebRTC] Error adding ice candidate:', e);
       }
     } else {
-      if (!peer.pendingCandidates) peer.pendingCandidates = [];
-      peer.pendingCandidates.push(candidate);
+      if (!this.pendingEarlyCandidates[peerId]) this.pendingEarlyCandidates[peerId] = [];
+      this.pendingEarlyCandidates[peerId].push(candidate);
+      if (peer) {
+        if (!peer.pendingCandidates) peer.pendingCandidates = [];
+        peer.pendingCandidates.push(candidate);
+      }
     }
   }
 
@@ -1380,6 +1434,12 @@ class WebRTCManager {
 
   // Close specific peer
   closePeer(peerId) {
+    if (this.peerDisconnectTimers[peerId]) {
+      clearTimeout(this.peerDisconnectTimers[peerId]);
+      delete this.peerDisconnectTimers[peerId];
+    }
+    delete this.pendingEarlyCandidates[peerId];
+
     if (this.peerGainNodes[peerId]) {
       try { this.peerGainNodes[peerId].disconnect(); } catch (e) {}
       delete this.peerGainNodes[peerId];
