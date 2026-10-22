@@ -120,16 +120,9 @@ if (!gotTheLock) {
       }
     });
 
-    // DISCORD-STYLE AUTO-SYNC ARCHITECTURE:
-    // When desktop app launches, it checks:
-    // 1. Local development server (http://localhost:3000)
-    // 2. Live production cloud server (https://turk-cord.vercel.app)
-    // 3. Bundled offline app files (app/index.html)
-    const localDevServer = 'http://localhost:3000';
-    const cloudProductionServer = 'https://turk-cord.vercel.app';
     const appHtml = path.join(__dirname, 'app', 'index.html');
 
-    const checkServer = (targetUrl, timeoutMs = 2500) => {
+    const checkServer = (targetUrl, timeoutMs = 800) => {
       return new Promise((resolve) => {
         try {
           const client = targetUrl.startsWith('https:') ? https : http;
@@ -152,24 +145,18 @@ if (!gotTheLock) {
     };
 
     async function initializeApp() {
-      // 1. First check if local dev server is active
-      const hasLocalDev = await checkServer(localDevServer, 800);
-      if (hasLocalDev) {
-        console.log('[TurkCord Desktop] Auto-sync connected to local dev:', localDevServer);
-        mainWindow.loadURL(localDevServer);
-        return;
+      // Only in local development mode check localhost
+      if (!app.isPackaged) {
+        const hasLocalDev = await checkServer('http://localhost:3000', 500);
+        if (hasLocalDev) {
+          console.log('[TurkCord Desktop] Dev mode: connected to localhost:3000');
+          mainWindow.loadURL('http://localhost:3000');
+          return;
+        }
       }
 
-      // 2. Check live production server (Vercel) so restarting PC app pulls updates instantly!
-      const hasCloudProduction = await checkServer(cloudProductionServer, 3000);
-      if (hasCloudProduction) {
-        console.log('[TurkCord Desktop] Auto-sync connected to live production:', cloudProductionServer);
-        mainWindow.loadURL(cloudProductionServer);
-        return;
-      }
-
-      // 3. Offline fallback
-      console.log('[TurkCord Desktop] Offline fallback to bundled local app...');
+      // Installed production app ALWAYS runs bundled local offline files
+      console.log('[TurkCord Desktop] Loading bundled local app:', appHtml);
       mainWindow.loadFile(appHtml);
     }
 
