@@ -261,9 +261,14 @@ export default function SettingsModal({ currentUser, onClose, onUpdateUser, init
             <Sliders className="w-5 h-5" />
           </div>
           <div>
-            <h3 className="text-lg font-black text-white">
-              Ayarlar & Donanım
-            </h3>
+            <div className="flex items-center space-x-2">
+              <h3 className="text-lg font-black text-white">
+                Ayarlar & Donanım
+              </h3>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 font-bold">
+                v1.0.14
+              </span>
+            </div>
             <p className="text-xs text-[#7d8590]">
               Ses filtreleri, klavye engelleyici ve profil kontrolü
             </p>

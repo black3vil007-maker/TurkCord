@@ -3,7 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('electronAPI', {
   isElectron: true,
   platform: process.platform,
-  version: '1.0.13',
+  version: '1.0.14',
   toggleFullscreen: () => ipcRenderer.invoke('app:toggle-fullscreen'),
   getMetrics: () => ipcRenderer.invoke('app:get-metrics'),
   getAutoLaunch: () => ipcRenderer.invoke('app:get-auto-launch'),
