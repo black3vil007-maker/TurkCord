@@ -1963,7 +1963,6 @@ export default function App() {
     }
 
     soundEffects.playSelfJoin();
-    realtimeSignaling.sendVoiceUserState(roomId, currentUserRef.current);
 
     // Oda kişi sınırı (Limit) kontrolü
     const existingInRoom = voiceRooms[roomId] || [];
@@ -2005,6 +2004,18 @@ export default function App() {
 
       // 4. Cloud presence update
       await realtimeSignaling.setVoiceRoom(roomId);
+
+      // 5. Instant connection with existing room occupants on room switch
+      const existingMembers = (voiceRooms[roomId] || []).filter(u => u && u.id && u.id !== currentUserRef.current?.id);
+      existingMembers.forEach(async (member) => {
+        const amIInitiator = String(currentUserRef.current.id) > String(member.id);
+        const peerObj = webrtc.peers[member.id];
+        const isAlive = peerObj && (peerObj.connection?.connectionState === 'connected' || peerObj.connection?.connectionState === 'connecting');
+        if (amIInitiator && !isAlive) {
+          console.log('[Room Switch] Connecting immediately to occupant:', member.username || member.id);
+          await webrtc.createPeerConnection(member.id, true);
+        }
+      });
 
       if (voiceTransitionSeqRef.current !== currentSeq) {
         console.log('[Voice] Join superseded after setVoiceRoom:', roomId);
@@ -4579,6 +4590,7 @@ function CleanChatView({
   const [lightboxImage, setLightboxImage] = useState(null);
   const [isSoundOn, setIsSoundOn] = useState(() => soundEffects.isChatSoundEnabled);
   const endRef = React.useRef(null);
+  const chatContainerRef = React.useRef(null);
   const fileInputRef = React.useRef(null);
   const emojiPickerRef = React.useRef(null);
 
@@ -4617,8 +4629,29 @@ function CleanChatView({
     }
   };
 
+    const scrollToBottom = (smooth = false) => {
+    const runScroll = () => {
+      if (chatContainerRef.current) {
+        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+      }
+      if (endRef.current) {
+        endRef.current.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'end' });
+      }
+    };
+    runScroll();
+    requestAnimationFrame(runScroll);
+    setTimeout(runScroll, 50);
+    setTimeout(runScroll, 200);
+  };
+
+  // Kanal degistiginde veya chat ekranina gecildiginde aninda en alta in
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+    scrollToBottom(false);
+  }, [channel?.id]);
+
+  // Yeni mesaj veya gorsel geldiginde en alta kaydir
+  useEffect(() => {
+    scrollToBottom(true);
   }, [messages, pendingImage]);
 
   // Click outside to close emoji picker
@@ -4763,7 +4796,7 @@ function CleanChatView({
       </div>
 
       {/* Mesaj Listesi (Kaydırılabilir Alan) */}
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
+      <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
         {(!messages || messages.length === 0) ? (
           <div className="flex flex-col items-center justify-center h-full text-center py-12 select-none opacity-80">
             <div className="w-16 h-16 rounded-3xl bg-gradient-to-tr from-indigo-600/30 to-purple-600/30 border border-indigo-500/40 flex items-center justify-center text-3xl mb-3 shadow-lg">

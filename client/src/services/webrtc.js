@@ -841,6 +841,9 @@ class WebRTCManager {
 
     if (this.peers[peerId]) {
       const existingPc = this.peers[peerId].connection;
+      if (existingPc && existingPc.connectionState === 'connected') {
+        return existingPc;
+      }
       if (existingPc && !['closed', 'failed', 'disconnected'].includes(existingPc.connectionState) && !isInitiator) {
         return existingPc;
       }
@@ -912,13 +915,7 @@ class WebRTCManager {
           };
 
           event.track.onended = purgeVideoTrack;
-          event.track.onmute = () => {
-            setTimeout(() => {
-              if (event.track.readyState === 'ended' || event.track.muted) {
-                purgeVideoTrack();
-              }
-            }, 300);
-          };
+          // Note: Never purge on transient video mute event (prevents audio freeze on window minimize)
         }
       } else if (event.streams && event.streams[0]) {
         event.streams[0].getTracks().forEach(track => {
@@ -926,10 +923,9 @@ class WebRTCManager {
         });
       }
 
-      // If audio track, ensure native audio element playback
-      const streamToPlay = (event.streams && event.streams[0]) ? event.streams[0] : remoteStream;
-      if ((event.track && event.track.kind === 'audio') || streamToPlay.getAudioTracks().length > 0) {
-        this.setupPeerAudio(peerId, streamToPlay);
+      // If audio track, ensure native audio element playback directly from persistent remoteStream
+      if ((event.track && event.track.kind === 'audio') || remoteStream.getAudioTracks().length > 0) {
+        this.setupPeerAudio(peerId, remoteStream);
       }
 
       this.optimizePeer(pc);
@@ -1164,15 +1160,7 @@ class WebRTCManager {
           await this.renegotiate(peerId, peer.connection);
         }
 
-        if (screenAudioTrack) {
-          const senders = peer.connection.getSenders();
-          if (!senders.some(s => s.track && s.track.id === screenAudioTrack.id)) {
-            try {
-              peer.connection.addTrack(screenAudioTrack, this.screenStream);
-              await this.renegotiate(peerId, peer.connection);
-            } catch (e) {}
-          }
-        }
+// Screen audio is already seamlessly mixed into the voice stream via WebAudio destination
 
         this.setVideoQualityForPeer(peerId, targetQuality);
       }
@@ -1192,7 +1180,7 @@ class WebRTCManager {
     }
   }
 
-  stopScreenShare() {
+  async stopScreenShare() {
     if (this.screenAudioSourceNode) {
       try { this.screenAudioSourceNode.disconnect(); } catch (e) {}
       this.screenAudioSourceNode = null;
@@ -1219,7 +1207,11 @@ class WebRTCManager {
           }
         }
         if (needsRenegotiate) {
-          this.renegotiate(peerId, peer.connection);
+          await this.renegotiate(peerId, peer.connection);
+        }
+        // Guarantee peer audio continues playing seamlessly
+        if (peer.audioEl) {
+          peer.audioEl.play().catch(() => {});
         }
       }
 

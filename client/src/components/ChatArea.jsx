@@ -26,9 +26,29 @@ export default function ChatArea({
   const [reactions, setReactions] = useState({}); // { [msgId]: { [emoji]: count } }
   const [showEmojiBar, setShowEmojiBar] = useState(false);
   const messagesEndRef = useRef(null);
+  const scrollContainerRef = useRef(null);
+
+  const scrollToBottom = (smooth = false) => {
+    const runScroll = () => {
+      if (scrollContainerRef.current) {
+        scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+      }
+      if (messagesEndRef.current) {
+        messagesEndRef.current.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'end' });
+      }
+    };
+    runScroll();
+    requestAnimationFrame(runScroll);
+    setTimeout(runScroll, 50);
+    setTimeout(runScroll, 200);
+  };
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    scrollToBottom(false);
+  }, [channel?.id]);
+
+  useEffect(() => {
+    scrollToBottom(true);
   }, [messages]);
 
   const handleSubmit = (e) => {
@@ -100,7 +120,7 @@ export default function ChatArea({
       </header>
 
       {/* Messages Scroll Area */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4">
         {/* Welcome Message in Channel */}
         <div className="my-6 p-4 rounded-2xl bg-tc-card/50 border border-tc-border max-w-lg">
           <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-tc-primary to-purple-600 flex items-center justify-center text-white mb-3 shadow-md">
