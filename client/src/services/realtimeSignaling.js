@@ -145,7 +145,7 @@ class RealtimeSignaling {
     });
   }
 
-  sendVoiceUserState(roomId, user) {
+  sendVoiceUserState(roomId, user, action = 'update') {
     if (!this.channel) return;
     const userData = user || this.currentUser;
     if (!userData || !userData.id) return;
@@ -155,6 +155,7 @@ class RealtimeSignaling {
       payload: {
         userId: userData.id,
         roomId: roomId || null,
+        action,
         user: {
           id: userData.id,
           username: userData.username,

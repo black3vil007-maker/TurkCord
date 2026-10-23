@@ -726,12 +726,25 @@ export default function App() {
       }
     };
 
+    const unlockAudio = () => {
+      webrtc.resumeAudioContexts();
+      Object.values(webrtc.peers).forEach(p => {
+        if (p.audioEl && p.audioEl.paused && p.remoteStream?.getAudioTracks().length > 0) {
+          p.audioEl.play().catch(() => {});
+        }
+      });
+    };
+
     document.addEventListener('contextmenu', handleContextMenu);
     window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('click', unlockAudio);
+    window.addEventListener('keydown', unlockAudio);
 
     return () => {
       document.removeEventListener('contextmenu', handleContextMenu);
       window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('click', unlockAudio);
+      window.removeEventListener('keydown', unlockAudio);
     };
   }, []);
 
@@ -1373,18 +1386,21 @@ export default function App() {
         // Rule: User with larger UUID is the designated initiator to strictly prevent collisions
         currentMembers.forEach(async (member) => {
           if (member && member.id && member.id !== currentUserRef.current?.id) {
-            const amIInitiator = String(currentUser.id) > String(member.id);
+            const myId = currentUserRef.current?.id;
+            const amIInitiator = String(myId || '') > String(member.id);
             const peerObj = webrtc.peers[member.id];
             const connState = peerObj?.connection?.connectionState;
             const isAlive = peerObj && (connState === 'connected' || connState === 'connecting');
 
-            if (peerObj && ['failed', 'closed', 'disconnected'].includes(connState)) {
+            if (peerObj && ['failed', 'closed'].includes(connState)) {
               webrtc.closePeer(member.id);
             }
 
             if (amIInitiator && !isAlive) {
               console.log('[WebRTC Mesh] Initiating audio connection with room peer:', member.username, member.id);
               await webrtc.createPeerConnection(member.id, true);
+            } else if (!isAlive) {
+              await webrtc.createPeerConnection(member.id, false);
             }
           }
         });
@@ -1513,11 +1529,11 @@ export default function App() {
       webrtc.setVideoQualityForPeer(viewerId, requestedQuality);
     };
 
-    realtimeSignaling.onVoiceUserState = ({ userId, roomId, user }) => {
+    realtimeSignaling.onVoiceUserState = ({ userId, roomId, user, action }) => {
       if (!userId || !user) return;
       const myId = currentUserRef.current?.id;
 
-      if (roomId) {
+      if (roomId && action !== 'leave') {
         voiceOccupantsRef.current.set(userId, { roomId, user, lastSeen: Date.now() });
       } else {
         voiceOccupantsRef.current.delete(userId);
@@ -1528,24 +1544,31 @@ export default function App() {
       setAllUsers(prev => {
         const exists = prev.some(u => u.id === userId);
         if (exists) {
-          return prev.map(u => u.id === userId ? { ...u, ...user, currentVoiceRoom: roomId } : u);
+          return prev.map(u => u.id === userId ? { ...u, ...user, currentVoiceRoom: action === 'leave' ? null : roomId } : u);
         } else {
-          return [...prev, { ...user, currentVoiceRoom: roomId }];
+          return [...prev, { ...user, currentVoiceRoom: action === 'leave' ? null : roomId }];
         }
       });
 
       // Peer mesh sync when in the same room
       const activeRoom = activeVoiceChannelRef.current;
-      if (activeRoom && roomId === activeRoom && userId !== myId) {
-        const amIInitiator = String(myId) > String(userId);
+      if (activeRoom && roomId === activeRoom && action !== 'leave' && userId !== myId) {
+        // If someone just joined our room, announce ourselves back so they have mutual discovery immediately
+        if (action === 'join' && currentUserRef.current) {
+          realtimeSignaling.sendVoiceUserState(activeRoom, currentUserRef.current, 'occupant');
+        }
+
+        const amIInitiator = String(myId || '') > String(userId);
         const peerObj = webrtc.peers[userId];
         const connState = peerObj?.connection?.connectionState;
         const isAlive = peerObj && (connState === 'connected' || connState === 'connecting');
         if (amIInitiator && !isAlive) {
           console.log('[Realtime Broadcast] Initiating mesh audio connection:', user.username, userId);
           webrtc.createPeerConnection(userId, true);
+        } else if (!isAlive) {
+          webrtc.createPeerConnection(userId, false);
         }
-      } else if (activeRoom && roomId !== activeRoom && userId !== myId) {
+      } else if (activeRoom && (roomId !== activeRoom || action === 'leave') && userId !== myId) {
         if (webrtc.peers[userId]) {
           webrtc.closePeer(userId);
           setPeers({ ...webrtc.peers });
@@ -1558,23 +1581,49 @@ export default function App() {
     };
   }, [currentUser?.id]);
 
-  // Periodic Voice Room Presence Heartbeat (Ensures all peers on Web/App immediately see occupants)
+  // Periodic Voice Room Presence & WebRTC Mesh Self-Healing Loop
   useEffect(() => {
     if (!activeVoiceChannel || !currentUser?.id) return;
 
     // Send an immediate broadcast confirmation
     if (activeVoiceChannelRef.current && currentUserRef.current) {
-      realtimeSignaling.sendVoiceUserState(activeVoiceChannelRef.current, currentUserRef.current);
+      realtimeSignaling.sendVoiceUserState(activeVoiceChannelRef.current, currentUserRef.current, 'heartbeat');
     }
 
     const interval = setInterval(() => {
-      if (activeVoiceChannelRef.current && currentUserRef.current) {
-        realtimeSignaling.sendVoiceUserState(activeVoiceChannelRef.current, currentUserRef.current);
-      }
-    }, 7000);
+      const activeRoom = activeVoiceChannelRef.current;
+      const myId = currentUserRef.current?.id;
+      if (!activeRoom || !myId) return;
+
+      // 1. Send periodic presence broadcast
+      realtimeSignaling.sendVoiceUserState(activeRoom, currentUserRef.current, 'heartbeat');
+
+      // 2. Self-Healing Mesh Check: inspect all occupants who should be in our active room
+      const currentOccupants = (voiceRooms[activeRoom] || []).filter(u => u && u.id && u.id !== myId);
+      currentOccupants.forEach(member => {
+        const peerId = member.id;
+        const peerObj = webrtc.peers[peerId];
+        const state = peerObj?.connection?.connectionState;
+        const amIInitiator = String(myId) > String(peerId);
+
+        if (!peerObj || state === 'failed') {
+          if (amIInitiator) {
+            console.log('[WebRTC Self-Heal] Auto-reconnecting to peer:', member.username, peerId);
+            webrtc.createPeerConnection(peerId, true);
+          } else {
+            webrtc.createPeerConnection(peerId, false);
+          }
+        } else if (state === 'connected') {
+          // Verify audio playback is unblocked
+          if (peerObj.audioEl && peerObj.audioEl.paused && peerObj.remoteStream?.getAudioTracks().length > 0) {
+            peerObj.audioEl.play().catch(() => {});
+          }
+        }
+      });
+    }, 2500);
 
     return () => clearInterval(interval);
-  }, [activeVoiceChannel, currentUser?.id]);
+  }, [activeVoiceChannel, currentUser?.id, voiceRooms]);
 
   // 4. Socket & WebRTC setup (Local & Fallback)
   useEffect(() => {
@@ -1739,22 +1788,22 @@ export default function App() {
     });
 
     socket.on('voice:peers', async ({ roomId, peers: existingPeers }) => {
-      if (activeVoiceChannelRef.current !== roomId) {
-        console.log('[Voice] Ignoring stale voice:peers for room', roomId, 'current active is', activeVoiceChannelRef.current);
-        return;
-      }
+      if (activeVoiceChannelRef.current !== roomId) return;
+      const myId = currentUserRef.current?.id;
       for (const p of (existingPeers || [])) {
         if (activeVoiceChannelRef.current !== roomId) return;
-        await webrtc.createPeerConnection(p.id, true);
+        const targetId = p.id || p.user?.id;
+        if (!targetId || targetId === myId) continue;
+        const amIInitiator = String(myId || '') > String(targetId);
+        await webrtc.createPeerConnection(targetId, amIInitiator);
       }
     });
 
     socket.on('voice:user-joined', async ({ roomId, peer }) => {
-      if (!peer || !peer.id || peer.id === socket.id) return;
-      if (activeVoiceChannelRef.current !== roomId) {
-        console.log('[Voice] Ignoring voice:user-joined for different room', roomId);
-        return;
-      }
+      const myId = currentUserRef.current?.id;
+      const targetId = peer?.id || peer?.user?.id;
+      if (!targetId || targetId === myId || targetId === socket.id) return;
+      if (activeVoiceChannelRef.current !== roomId) return;
       soundEffects.playUserJoined();
       setRoomEventToast({
         type: 'join',
@@ -1762,7 +1811,8 @@ export default function App() {
         user: peer.user || peer
       });
       setTimeout(() => setRoomEventToast(null), 4500);
-      await webrtc.createPeerConnection(peer.id, false);
+      const amIInitiator = String(myId || '') > String(targetId);
+      await webrtc.createPeerConnection(targetId, amIInitiator);
     });
 
     socket.on('voice:user-left', ({ roomId, peerId }) => {
@@ -1941,7 +1991,13 @@ export default function App() {
     setScreenStream(null);
     setEndedBroadcast(null);
 
-    // 2. Önceki odadan anında temizlen: Mikrofonu açık tutarak WebRTC peer bağlantılarını temizle
+    // 2. Önceki odadan anında temizlen
+    if (activeVoiceChannelRef.current && activeVoiceChannelRef.current !== roomId) {
+      realtimeSignaling.sendVoiceUserState(null, currentUserRef.current, 'leave');
+      if (socket && socket.connected) {
+        socket.emit('voice:leave');
+      }
+    }
     webrtc.leaveRoom(true);
     prevRoomMembersRef.current = new Set();
 
@@ -2002,8 +2058,9 @@ export default function App() {
       if (currentUserRef.current?.id) initialIds.add(currentUserRef.current.id);
       prevRoomMembersRef.current = initialIds;
 
-      // 4. Cloud presence update
+      // 4. Cloud presence update with instant join announcement
       await realtimeSignaling.setVoiceRoom(roomId);
+      realtimeSignaling.sendVoiceUserState(roomId, currentUserRef.current, 'join');
 
       // 5. Instant connection with existing room occupants on room switch
       const existingMembers = (voiceRooms[roomId] || []).filter(u => u && u.id && u.id !== currentUserRef.current?.id);
@@ -2014,6 +2071,8 @@ export default function App() {
         if (amIInitiator && !isAlive) {
           console.log('[Room Switch] Connecting immediately to occupant:', member.username || member.id);
           await webrtc.createPeerConnection(member.id, true);
+        } else if (!isAlive) {
+          await webrtc.createPeerConnection(member.id, false);
         }
       });
 
@@ -2062,7 +2121,7 @@ export default function App() {
     }
 
     realtimeSignaling.setVoiceRoom(null);
-    realtimeSignaling.sendVoiceUserState(null, currentUserRef.current);
+    realtimeSignaling.sendVoiceUserState(null, currentUserRef.current, 'leave');
 
     if (socket && socket.connected) {
       socket.emit('voice:leave');

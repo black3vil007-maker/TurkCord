@@ -491,11 +491,19 @@ io.on('connection', (socket) => {
 
     socket.join(roomId);
 
+    function resolveTargetSocketId(targetId) {
+      if (!targetId) return null;
+      if (users[targetId]) return targetId;
+      const found = Object.values(users).find(u => u.id === targetId || u.socketId === targetId);
+      return found ? found.socketId : null;
+    }
+
     // 5. Send peers and broadcast updates
     socket.emit('voice:peers', {
       roomId,
       peers: existingPeers.map(peerId => ({
-        id: peerId,
+        id: users[peerId]?.id || peerId,
+        socketId: peerId,
         user: users[peerId]
       }))
     });
@@ -503,7 +511,8 @@ io.on('connection', (socket) => {
     socket.to(roomId).emit('voice:user-joined', {
       roomId,
       peer: {
-        id: socket.id,
+        id: user.id || socket.id,
+        socketId: socket.id,
         user
       }
     });
@@ -522,28 +531,43 @@ io.on('connection', (socket) => {
     }
   });
 
-  // WebRTC Signaling: Offer
+  // WebRTC Signaling: Offer (Supports both userId and socketId)
   socket.on('webrtc:offer', ({ to, offer }) => {
-    io.to(to).emit('webrtc:offer', {
-      from: socket.id,
-      offer
-    });
+    const user = users[socket.id];
+    const fromId = user?.id || socket.id;
+    const targetSocketId = resolveTargetSocketId(to);
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('webrtc:offer', {
+        from: fromId,
+        offer
+      });
+    }
   });
 
-  // WebRTC Signaling: Answer
+  // WebRTC Signaling: Answer (Supports both userId and socketId)
   socket.on('webrtc:answer', ({ to, answer }) => {
-    io.to(to).emit('webrtc:answer', {
-      from: socket.id,
-      answer
-    });
+    const user = users[socket.id];
+    const fromId = user?.id || socket.id;
+    const targetSocketId = resolveTargetSocketId(to);
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('webrtc:answer', {
+        from: fromId,
+        answer
+      });
+    }
   });
 
-  // WebRTC Signaling: ICE Candidate
+  // WebRTC Signaling: ICE Candidate (Supports both userId and socketId)
   socket.on('webrtc:ice-candidate', ({ to, candidate }) => {
-    io.to(to).emit('webrtc:ice-candidate', {
-      from: socket.id,
-      candidate
-    });
+    const user = users[socket.id];
+    const fromId = user?.id || socket.id;
+    const targetSocketId = resolveTargetSocketId(to);
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('webrtc:ice-candidate', {
+        from: fromId,
+        candidate
+      });
+    }
   });
 
   // Voice state updates (mute, deafen, speaking, screen sharing)
@@ -607,7 +631,8 @@ io.on('connection', (socket) => {
       sock.leave(roomId);
       sock.to(roomId).emit('voice:user-left', {
         roomId,
-        peerId: sock.id
+        peerId: users[sock.id]?.id || sock.id,
+        socketId: sock.id
       });
     }
     if (users[sock.id]) {

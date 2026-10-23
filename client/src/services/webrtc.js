@@ -71,6 +71,10 @@ class WebRTCManager {
     // Audio Input & Output Device Selection (Persisted)
     this.selectedInputDeviceId = localStorage.getItem('turkcord_input_device_id') || 'default';
     this.selectedOutputDeviceId = localStorage.getItem('turkcord_output_device_id') || 'default';
+
+    // Synchronization & Mutex State
+    this.initAudioPromise = null;
+    this.pendingIceCandidates = {};
   }
 
   // Enumerate all available audio input and output devices
@@ -547,135 +551,144 @@ class WebRTCManager {
 
   // Initialize local microphone with studio DSP pipeline (cuts mechanical keyboard noise 100%)
   async initLocalAudio() {
+    if (this.initAudioPromise) {
+      return this.initAudioPromise;
+    }
     if (this.localStream && this.localStream.getAudioTracks().length > 0 && this.localStream.getAudioTracks()[0].readyState === 'live') {
       return this.localStream;
     }
 
-    try {
-      const audioConstraints = {
-        echoCancellation: Boolean(this.audioSettings.echoCancellation),
-        noiseSuppression: Boolean(this.audioSettings.noiseSuppression),
-        autoGainControl: Boolean(this.audioSettings.autoGainControl), // default false: prevents browser from boosting background noise & keyboard clicks during pauses!
-        googEchoCancellation: Boolean(this.audioSettings.echoCancellation),
-        googNoiseSuppression: Boolean(this.audioSettings.noiseSuppression),
-        googHighpassFilter: true,
-        googTypingNoiseDetection: true,
-        channelCount: 1,
-        sampleRate: 48000
-      };
-      if (this.selectedInputDeviceId && this.selectedInputDeviceId !== 'default') {
-        audioConstraints.deviceId = { exact: this.selectedInputDeviceId };
-      }
-
+    this.initAudioPromise = (async () => {
       try {
-        this.rawStream = await navigator.mediaDevices.getUserMedia({
-          audio: audioConstraints,
-          video: false
-        });
-      } catch (deviceErr) {
-        console.warn('[WebRTC] Specific mic device failed, falling back to default:', deviceErr);
-        this.selectedInputDeviceId = 'default';
-        localStorage.removeItem('turkcord_input_device_id');
-        this.rawStream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: false,
-            channelCount: 1,
-            sampleRate: 48000
-          },
-          video: false
-        });
-      }
-
-      // Initialize Studio DSP Pipeline with Web Audio API
-      try {
-        const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        if (!this.audioContext || this.audioContext.state === 'closed') {
-          this.audioContext = new AudioCtx({ sampleRate: 48000 });
-        }
-        if (this.audioContext.state === 'suspended') {
-          await this.audioContext.resume().catch(() => {});
+        const audioConstraints = {
+          echoCancellation: Boolean(this.audioSettings.echoCancellation),
+          noiseSuppression: Boolean(this.audioSettings.noiseSuppression),
+          autoGainControl: Boolean(this.audioSettings.autoGainControl),
+          googEchoCancellation: Boolean(this.audioSettings.echoCancellation),
+          googNoiseSuppression: Boolean(this.audioSettings.noiseSuppression),
+          googHighpassFilter: true,
+          googTypingNoiseDetection: true,
+          channelCount: 1,
+          sampleRate: 48000
+        };
+        if (this.selectedInputDeviceId && this.selectedInputDeviceId !== 'default') {
+          audioConstraints.deviceId = { exact: this.selectedInputDeviceId };
         }
 
-        // 1. Raw Microphone Source Node
-        if (this.micSourceNode) {
-          try { this.micSourceNode.disconnect(); } catch (e) {}
-        }
-        this.micSourceNode = this.audioContext.createMediaStreamSource(this.rawStream);
-
-        // 2. High-Pass Filter: Cuts mechanical keyboard desk vibrations (< 120Hz)
-        this.highpassFilter = this.audioContext.createBiquadFilter();
-        this.highpassFilter.type = 'highpass';
-        this.highpassFilter.frequency.value = this.audioSettings.keyboardFilterEnabled !== false ? 120 : 80;
-        this.highpassFilter.Q.value = 0.707;
-        this.micSourceNode.connect(this.highpassFilter);
-
-        // 3. Mechanical Switch Click Attenuation (cuts sharp 3.8kHz switch clatter)
-        this.keyboardFilterShelf = this.audioContext.createBiquadFilter();
-        this.keyboardFilterShelf.type = 'highshelf';
-        this.keyboardFilterShelf.frequency.value = 3800;
-        this.keyboardFilterShelf.gain.value = this.audioSettings.keyboardFilterEnabled !== false ? -18 : 0;
-        this.highpassFilter.connect(this.keyboardFilterShelf);
-
-        // 4. Analyser for Real-time Voice Formants Detection (measures post-denoise signal)
-        this.analyser = this.audioContext.createAnalyser();
-        this.analyser.fftSize = 512;
-        this.analyser.smoothingTimeConstant = 0.2;
-        this.keyboardFilterShelf.connect(this.analyser);
-
-        // 5. Master Input Gain (controlled by user's inputVolume slider 0% - 200%)
-        this.micGainNode = this.audioContext.createGain();
-        const initialGain = Math.max(0, this.inputVolume / 100);
-        this.micGainNode.gain.value = initialGain;
-        this.keyboardFilterShelf.connect(this.micGainNode);
-
-        // 6. Voice Activity Gate (cuts 100% of background noise, breathing & typing when not speaking)
-        this.gateGainNode = this.audioContext.createGain();
-        this.gateGainNode.gain.value = this.audioSettings.voiceGateEnabled ? 0 : 1.0;
-        this.micGainNode.connect(this.gateGainNode);
-
-        // 7. Studio Peak Limiter / Dynamics Compressor (prevents ear-piercing clipping & shouting)
-        this.compressor = this.audioContext.createDynamicsCompressor();
-        this.compressor.threshold.value = -12;
-        this.compressor.knee.value = 8;
-        this.compressor.ratio.value = 6;
-        this.compressor.attack.value = 0.003;
-        this.compressor.release.value = 0.15;
-        this.gateGainNode.connect(this.compressor);
-
-        // 8. Destination Stream to send to WebRTC peer connections
-        this.audioDestination = this.audioContext.createMediaStreamDestination();
-        this.compressor.connect(this.audioDestination);
-
-        // 9. Asynchronously activate RNNoise AI Denoise if enabled
-        if (this.audioSettings.aiDenoise !== false) {
-          this.initRnnoiseFilter().catch(err => {
-            console.warn('[WebRTC] RNNoise filter init error, keeping standard filters:', err);
+        try {
+          this.rawStream = await navigator.mediaDevices.getUserMedia({
+            audio: audioConstraints,
+            video: false
+          });
+        } catch (deviceErr) {
+          console.warn('[WebRTC] Specific mic device failed, falling back to default:', deviceErr);
+          this.selectedInputDeviceId = 'default';
+          localStorage.removeItem('turkcord_input_device_id');
+          this.rawStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: false,
+              channelCount: 1,
+              sampleRate: 48000
+            },
+            video: false
           });
         }
 
-        this.processedStream = this.audioDestination.stream;
-        this.localStream = this.processedStream;
-      } catch (dspErr) {
-        console.warn('[WebRTC] DSP pipeline setup error, falling back to raw stream:', dspErr);
-        this.localStream = this.rawStream;
-      }
+        // Initialize Studio DSP Pipeline with Web Audio API
+        try {
+          const AudioCtx = window.AudioContext || window.webkitAudioContext;
+          if (!this.audioContext || this.audioContext.state === 'closed') {
+            this.audioContext = new AudioCtx({ sampleRate: 48000 });
+          }
+          if (this.audioContext.state === 'suspended') {
+            await this.audioContext.resume().catch(() => {});
+          }
 
-      const track = this.localStream.getAudioTracks()[0];
-      if (track) {
-        track.enabled = !this.isMuted;
-        if ('contentHint' in track) {
-          track.contentHint = 'speech';
+          // 1. Raw Microphone Source Node
+          if (this.micSourceNode) {
+            try { this.micSourceNode.disconnect(); } catch (e) {}
+          }
+          this.micSourceNode = this.audioContext.createMediaStreamSource(this.rawStream);
+
+          // 2. High-Pass Filter: Cuts mechanical keyboard desk vibrations (< 120Hz)
+          this.highpassFilter = this.audioContext.createBiquadFilter();
+          this.highpassFilter.type = 'highpass';
+          this.highpassFilter.frequency.value = this.audioSettings.keyboardFilterEnabled !== false ? 120 : 80;
+          this.highpassFilter.Q.value = 0.707;
+          this.micSourceNode.connect(this.highpassFilter);
+
+          // 3. Mechanical Switch Click Attenuation (cuts sharp 3.8kHz switch clatter)
+          this.keyboardFilterShelf = this.audioContext.createBiquadFilter();
+          this.keyboardFilterShelf.type = 'highshelf';
+          this.keyboardFilterShelf.frequency.value = 3800;
+          this.keyboardFilterShelf.gain.value = this.audioSettings.keyboardFilterEnabled !== false ? -18 : 0;
+          this.highpassFilter.connect(this.keyboardFilterShelf);
+
+          // 4. Analyser for Real-time Voice Formants Detection (measures post-denoise signal)
+          this.analyser = this.audioContext.createAnalyser();
+          this.analyser.fftSize = 512;
+          this.analyser.smoothingTimeConstant = 0.2;
+          this.keyboardFilterShelf.connect(this.analyser);
+
+          // 5. Master Input Gain (controlled by user's inputVolume slider 0% - 200%)
+          this.micGainNode = this.audioContext.createGain();
+          const initialGain = Math.max(0, this.inputVolume / 100);
+          this.micGainNode.gain.value = initialGain;
+          this.keyboardFilterShelf.connect(this.micGainNode);
+
+          // 6. Voice Activity Gate (cuts 100% of background noise, breathing & typing when not speaking)
+          this.gateGainNode = this.audioContext.createGain();
+          this.gateGainNode.gain.value = this.audioSettings.voiceGateEnabled ? 0 : 1.0;
+          this.micGainNode.connect(this.gateGainNode);
+
+          // 7. Studio Peak Limiter / Dynamics Compressor (prevents ear-piercing clipping & shouting)
+          this.compressor = this.audioContext.createDynamicsCompressor();
+          this.compressor.threshold.value = -12;
+          this.compressor.knee.value = 8;
+          this.compressor.ratio.value = 6;
+          this.compressor.attack.value = 0.003;
+          this.compressor.release.value = 0.15;
+          this.gateGainNode.connect(this.compressor);
+
+          // 8. Destination Stream to send to WebRTC peer connections
+          this.audioDestination = this.audioContext.createMediaStreamDestination();
+          this.compressor.connect(this.audioDestination);
+
+          // 9. Asynchronously activate RNNoise AI Denoise if enabled
+          if (this.audioSettings.aiDenoise !== false) {
+            this.initRnnoiseFilter().catch(err => {
+              console.warn('[WebRTC] RNNoise filter init error, keeping standard filters:', err);
+            });
+          }
+
+          this.processedStream = this.audioDestination.stream;
+          this.localStream = this.processedStream;
+        } catch (dspErr) {
+          console.warn('[WebRTC] DSP pipeline setup error, falling back to raw stream:', dspErr);
+          this.localStream = this.rawStream;
         }
-      }
 
-      this.setupVAD();
-      return this.localStream;
-    } catch (err) {
-      console.error('[WebRTC] Microphone access error:', err);
-      throw err;
-    }
+        const track = this.localStream.getAudioTracks()[0];
+        if (track) {
+          track.enabled = !this.isMuted;
+          if ('contentHint' in track) {
+            track.contentHint = 'speech';
+          }
+        }
+
+        this.setupVAD();
+        return this.localStream;
+      } catch (err) {
+        console.error('[WebRTC] Microphone access error:', err);
+        throw err;
+      } finally {
+        this.initAudioPromise = null;
+      }
+    })();
+
+    return this.initAudioPromise;
   }
 
   // Optimize SDP specifically for Gaming: Opus Audio with inband FEC & Crisp Screen Share
@@ -831,6 +844,7 @@ class WebRTCManager {
 
   // Connect to an existing peer (Caller initiates offer)
   async createPeerConnection(peerId, isInitiator) {
+    if (!peerId) return null;
     if (!this.localStream) {
       try {
         await this.initLocalAudio();
@@ -839,12 +853,28 @@ class WebRTCManager {
       }
     }
 
-    if (this.peers[peerId]) {
-      const existingPc = this.peers[peerId].connection;
-      if (existingPc && existingPc.connectionState === 'connected') {
-        return existingPc;
-      }
-      if (existingPc && !['closed', 'failed', 'disconnected'].includes(existingPc.connectionState) && !isInitiator) {
+    const existingPeer = this.peers[peerId];
+    if (existingPeer) {
+      const existingPc = existingPeer.connection;
+      const state = existingPc?.connectionState;
+      if (existingPc && (state === 'connected' || state === 'connecting')) {
+        if (isInitiator && existingPc.signalingState === 'stable') {
+          try {
+            const offer = await existingPc.createOffer({
+              offerToReceiveAudio: true,
+              offerToReceiveVideo: true
+            });
+            const optimizedOffer = new RTCSessionDescription({
+              type: offer.type,
+              sdp: this.optimizeSdpForGaming(offer.sdp)
+            });
+            await existingPc.setLocalDescription(optimizedOffer);
+            this.optimizePeer(existingPc);
+            this.sendSignal('webrtc:offer', { to: peerId, offer: optimizedOffer });
+          } catch (e) {
+            console.warn('[WebRTC] Renegotiation offer error for ' + peerId, e);
+          }
+        }
         return existingPc;
       }
       this.closePeer(peerId);
@@ -874,20 +904,22 @@ class WebRTCManager {
       remoteStream,
       audioEl,
       user: null,
-      pendingCandidates: []
+      pendingCandidates: [],
+      lastAppliedOfferSdp: null,
+      disconnectTimeout: null
     };
 
     // Add local mic tracks
     if (this.localStream) {
       this.localStream.getTracks().forEach(track => {
-        pc.addTrack(track, this.localStream);
+        try { pc.addTrack(track, this.localStream); } catch (e) {}
       });
     }
 
     // Add screen share tracks if currently sharing
     if (this.screenStream) {
       this.screenStream.getTracks().forEach(track => {
-        pc.addTrack(track, this.screenStream);
+        try { pc.addTrack(track, this.screenStream); } catch (e) {}
       });
     }
 
@@ -903,7 +935,6 @@ class WebRTCManager {
             if (this.onRemoteScreenShareStopped) {
               try { this.onRemoteScreenShareStopped(peerId); } catch (e) {}
             }
-            // CRITICAL: Keep audio flowing through audioEl
             if (this.peers[peerId]?.audioEl && remoteStream.getAudioTracks().length > 0) {
               this.peers[peerId].audioEl.srcObject = remoteStream;
               this.peers[peerId].audioEl.play().catch(() => {});
@@ -915,7 +946,6 @@ class WebRTCManager {
           };
 
           event.track.onended = purgeVideoTrack;
-          // Note: Never purge on transient video mute event (prevents audio freeze on window minimize)
         }
       } else if (event.streams && event.streams[0]) {
         event.streams[0].getTracks().forEach(track => {
@@ -923,7 +953,6 @@ class WebRTCManager {
         });
       }
 
-      // If audio track, ensure native audio element playback directly from persistent remoteStream
       if ((event.track && event.track.kind === 'audio') || remoteStream.getAudioTracks().length > 0) {
         this.setupPeerAudio(peerId, remoteStream);
       }
@@ -945,12 +974,31 @@ class WebRTCManager {
       }
     };
 
-    // Handle connection state changes
+    // Handle connection state changes with grace period for transient network drops
     pc.onconnectionstatechange = () => {
       console.log(`[WebRTC] Peer ${peerId} connectionState:`, pc.connectionState);
-      if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+      const currentPeer = this.peers[peerId];
+      if (pc.connectionState === 'connected') {
+        if (currentPeer?.disconnectTimeout) {
+          clearTimeout(currentPeer.disconnectTimeout);
+          currentPeer.disconnectTimeout = null;
+        }
+        if (currentPeer?.audioEl && currentPeer.remoteStream?.getAudioTracks().length > 0) {
+          currentPeer.audioEl.play().catch(() => {});
+        }
+      } else if (pc.connectionState === 'disconnected') {
+        if (currentPeer && !currentPeer.disconnectTimeout) {
+          currentPeer.disconnectTimeout = setTimeout(() => {
+            if (currentPeer.connection?.connectionState === 'disconnected') {
+              console.log(`[WebRTC] Peer ${peerId} disconnected timeout reached, closing.`);
+              this.closePeer(peerId);
+            }
+          }, 3500);
+        }
+      } else if (['failed', 'closed'].includes(pc.connectionState)) {
         this.closePeer(peerId);
       }
+      if (this.onPeersChange) this.onPeersChange({ ...this.peers });
     };
 
     if (isInitiator) {
@@ -978,6 +1026,7 @@ class WebRTCManager {
 
   // Handle incoming Offer from a peer with collision handling and candidate buffer flush
   async handleOffer(peerId, offer) {
+    if (!peerId || !offer) return;
     if (!this.localStream) {
       try {
         await this.initLocalAudio();
@@ -988,11 +1037,19 @@ class WebRTCManager {
 
     let peer = this.peers[peerId];
     let pc;
-    if (!peer || (peer.connection && ['closed', 'failed', 'disconnected'].includes(peer.connection.connectionState))) {
+    if (!peer || (peer.connection && ['closed', 'failed'].includes(peer.connection.connectionState))) {
       if (peer) this.closePeer(peerId);
       pc = await this.createPeerConnection(peerId, false);
+      peer = this.peers[peerId];
     } else {
       pc = peer.connection;
+    }
+
+    if (!pc) return;
+
+    // Deduplication check
+    if (peer && peer.lastAppliedOfferSdp === offer.sdp) {
+      return;
     }
 
     // Ensure our local audio tracks are attached to pc
@@ -1000,15 +1057,17 @@ class WebRTCManager {
       const senders = pc.getSenders();
       this.localStream.getAudioTracks().forEach(track => {
         if (!senders.some(s => s.track && s.track.id === track.id)) {
-          pc.addTrack(track, this.localStream);
+          try { pc.addTrack(track, this.localStream); } catch (e) {}
         }
       });
     }
 
     try {
       // Glare / collision handling: If already in have-local-offer, resolve politely
-      if (pc.signalingState !== 'stable') {
-        const isPolite = (this.currentUserId || '') < (peerId || '');
+      const isPolite = String(this.currentUserId || '') < String(peerId || '');
+      const isCollision = pc.signalingState !== 'stable';
+
+      if (isCollision) {
         if (isPolite) {
           try {
             await pc.setLocalDescription({ type: 'rollback' });
@@ -1016,12 +1075,13 @@ class WebRTCManager {
             console.warn('[WebRTC] Rollback error:', e);
           }
         } else {
-          console.log('[WebRTC] Glare collision ignored (impolite peer)');
+          console.log('[WebRTC] Glare collision ignored (impolite peer):', peerId);
           return;
         }
       }
 
       await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      if (peer) peer.lastAppliedOfferSdp = offer.sdp;
       await this.flushPendingCandidates(peerId);
 
       const answer = await pc.createAnswer();
@@ -1044,6 +1104,7 @@ class WebRTCManager {
 
   // Handle incoming Answer with candidate buffer flush
   async handleAnswer(peerId, answer) {
+    if (!peerId || !answer) return;
     const peer = this.peers[peerId];
     if (peer && peer.connection) {
       try {
@@ -1060,32 +1121,43 @@ class WebRTCManager {
   // Flush queued ICE candidates that arrived before remoteDescription
   async flushPendingCandidates(peerId) {
     const peer = this.peers[peerId];
-    if (!peer || !peer.connection || !peer.pendingCandidates || peer.pendingCandidates.length === 0) return;
-    const candidates = [...peer.pendingCandidates];
+    if (!peer || !peer.connection) return;
+    const candidates = [
+      ...(this.pendingIceCandidates[peerId] || []),
+      ...(peer.pendingCandidates || [])
+    ];
+    this.pendingIceCandidates[peerId] = [];
     peer.pendingCandidates = [];
+
     for (const cand of candidates) {
       try {
         await peer.connection.addIceCandidate(new RTCIceCandidate(cand));
       } catch (e) {
-        console.warn('[WebRTC] Error flushing candidate:', e);
+        console.warn('[WebRTC] Error flushing candidate for ' + peerId, e);
       }
     }
   }
 
   // Handle incoming ICE candidate with buffering
   async handleCandidate(peerId, candidate) {
+    if (!peerId || !candidate) return;
     const peer = this.peers[peerId];
-    if (!peer || !peer.connection) return;
 
-    if (peer.connection.remoteDescription && peer.connection.remoteDescription.type) {
+    if (peer && peer.connection && peer.connection.remoteDescription && peer.connection.remoteDescription.type) {
       try {
         await peer.connection.addIceCandidate(new RTCIceCandidate(candidate));
       } catch (e) {
         console.warn('[WebRTC] Error adding ice candidate:', e);
       }
     } else {
-      if (!peer.pendingCandidates) peer.pendingCandidates = [];
-      peer.pendingCandidates.push(candidate);
+      if (!this.pendingIceCandidates[peerId]) {
+        this.pendingIceCandidates[peerId] = [];
+      }
+      this.pendingIceCandidates[peerId].push(candidate);
+      if (peer) {
+        if (!peer.pendingCandidates) peer.pendingCandidates = [];
+        peer.pendingCandidates.push(candidate);
+      }
     }
   }
 
@@ -1376,15 +1448,20 @@ class WebRTCManager {
       try { this.peerGainNodes[peerId].disconnect(); } catch (e) {}
       delete this.peerGainNodes[peerId];
     }
+    delete this.pendingIceCandidates[peerId];
 
     const peer = this.peers[peerId];
     if (peer) {
+      if (peer.disconnectTimeout) {
+        clearTimeout(peer.disconnectTimeout);
+        peer.disconnectTimeout = null;
+      }
       if (peer.audioEl) {
         peer.audioEl.srcObject = null;
         peer.audioEl.remove();
       }
       if (peer.connection) {
-        peer.connection.close();
+        try { peer.connection.close(); } catch (e) {}
       }
       delete this.peers[peerId];
       if (this.onPeersChange) this.onPeersChange({ ...this.peers });
