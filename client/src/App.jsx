@@ -4629,30 +4629,44 @@ function CleanChatView({
     }
   };
 
-    const scrollToBottom = (smooth = false) => {
-    const runScroll = () => {
+  const prevChannelIdRef = React.useRef(channel?.id);
+  const prevMsgLengthRef = React.useRef(messages?.length || 0);
+
+  // Kanal degistiginde veya sohbete ilk gecildiginde: Titreme ve gecikme olmaksizin tek hamlede aninda en alta in
+  React.useLayoutEffect(() => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
+    const rafId = requestAnimationFrame(() => {
       if (chatContainerRef.current) {
         chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
       }
-      if (endRef.current) {
-        endRef.current.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'end' });
-      }
-    };
-    runScroll();
-    requestAnimationFrame(runScroll);
-    setTimeout(runScroll, 50);
-    setTimeout(runScroll, 200);
-  };
-
-  // Kanal degistiginde veya chat ekranina gecildiginde aninda en alta in
-  useEffect(() => {
-    scrollToBottom(false);
+    });
+    prevChannelIdRef.current = channel?.id;
+    prevMsgLengthRef.current = messages?.length || 0;
+    return () => cancelAnimationFrame(rafId);
   }, [channel?.id]);
 
-  // Yeni mesaj veya gorsel geldiginde en alta kaydir
+  // Yalnizca ayni kanalda yeni bir mesaj veya eklenen gorsel geldiginde puruzsuz kaydir
   useEffect(() => {
-    scrollToBottom(true);
-  }, [messages, pendingImage]);
+    const isSameChannel = prevChannelIdRef.current === channel?.id;
+    const hasNewMessage = (messages?.length || 0) > prevMsgLengthRef.current;
+
+    if (isSameChannel && hasNewMessage) {
+      if (chatContainerRef.current) {
+        chatContainerRef.current.scrollTo({
+          top: chatContainerRef.current.scrollHeight,
+          behavior: 'smooth'
+        });
+      }
+    } else if (isSameChannel && pendingImage) {
+      if (chatContainerRef.current) {
+        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+      }
+    }
+
+    prevMsgLengthRef.current = messages?.length || 0;
+  }, [messages?.length, pendingImage, channel?.id]);
 
   // Click outside to close emoji picker
   useEffect(() => {

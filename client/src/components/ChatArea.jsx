@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { 
   Hash, 
   Send, 
@@ -28,28 +28,38 @@ export default function ChatArea({
   const messagesEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
 
-  const scrollToBottom = (smooth = false) => {
-    const runScroll = () => {
+  const prevChannelIdRef = useRef(channel?.id);
+  const prevMsgLengthRef = useRef(messages?.length || 0);
+
+  // Kanal degistiginde titreme olmaksizin aninda en alta konumlan
+  useLayoutEffect(() => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+    }
+    const rafId = requestAnimationFrame(() => {
       if (scrollContainerRef.current) {
         scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
       }
-      if (messagesEndRef.current) {
-        messagesEndRef.current.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'end' });
-      }
-    };
-    runScroll();
-    requestAnimationFrame(runScroll);
-    setTimeout(runScroll, 50);
-    setTimeout(runScroll, 200);
-  };
-
-  useEffect(() => {
-    scrollToBottom(false);
+    });
+    prevChannelIdRef.current = channel?.id;
+    prevMsgLengthRef.current = messages?.length || 0;
+    return () => cancelAnimationFrame(rafId);
   }, [channel?.id]);
 
+  // Yeni mesaj geldiginde puruzsuz kaydir
   useEffect(() => {
-    scrollToBottom(true);
-  }, [messages]);
+    const isSameChannel = prevChannelIdRef.current === channel?.id;
+    const hasNewMessage = (messages?.length || 0) > prevMsgLengthRef.current;
+    if (isSameChannel && hasNewMessage) {
+      if (scrollContainerRef.current) {
+        scrollContainerRef.current.scrollTo({
+          top: scrollContainerRef.current.scrollHeight,
+          behavior: 'smooth'
+        });
+      }
+    }
+    prevMsgLengthRef.current = messages?.length || 0;
+  }, [messages?.length, channel?.id]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
