@@ -4014,8 +4014,9 @@ export default function App() {
           )
         ) : activeTab === 'chat' ? (
           <CleanChatView
+            key={activeTextChannel}
             channel={currentTextObj}
-            messages={messages[activeTextChannel] || []}
+            messages={messages[activeTextChannel] || loadCachedMessages(activeTextChannel) || []}
             onSendMessage={handleSendMessage}
             activeVoiceChannel={activeVoiceChannel}
             onGoToVoice={() => setActiveTab('voice')}
@@ -4629,44 +4630,53 @@ function CleanChatView({
     }
   };
 
-  const prevChannelIdRef = React.useRef(channel?.id);
   const prevMsgLengthRef = React.useRef(messages?.length || 0);
+  const initialScrollDoneRef = React.useRef(false);
 
-  // Kanal degistiginde veya sohbete ilk gecildiginde: Titreme ve gecikme olmaksizin tek hamlede aninda en alta in
+  // Kanal acildiginda veya degistiginde: Titreme ve gecikme olmaksizin aninda en alta in
   React.useLayoutEffect(() => {
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+      initialScrollDoneRef.current = true;
     }
     const rafId = requestAnimationFrame(() => {
       if (chatContainerRef.current) {
         chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+        initialScrollDoneRef.current = true;
       }
     });
-    prevChannelIdRef.current = channel?.id;
     prevMsgLengthRef.current = messages?.length || 0;
     return () => cancelAnimationFrame(rafId);
   }, [channel?.id]);
 
-  // Yalnizca ayni kanalda yeni bir mesaj veya eklenen gorsel geldiginde puruzsuz kaydir
-  useEffect(() => {
-    const isSameChannel = prevChannelIdRef.current === channel?.id;
-    const hasNewMessage = (messages?.length || 0) > prevMsgLengthRef.current;
+  // Mesajlar yuklendiginde veya yeni mesaj geldiginde
+  React.useLayoutEffect(() => {
+    // Eger ilk acilista liste bostu ve mesajlar simdi geldiyse aninda en alta in
+    if (!initialScrollDoneRef.current && (messages?.length || 0) > 0) {
+      if (chatContainerRef.current) {
+        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+      }
+      initialScrollDoneRef.current = true;
+      prevMsgLengthRef.current = messages.length;
+      return;
+    }
 
-    if (isSameChannel && hasNewMessage) {
+    // Ayni kanalda yeni bir mesaj eklendiyse puruzsuz kaydir
+    if (initialScrollDoneRef.current && (messages?.length || 0) > prevMsgLengthRef.current) {
       if (chatContainerRef.current) {
         chatContainerRef.current.scrollTo({
           top: chatContainerRef.current.scrollHeight,
           behavior: 'smooth'
         });
       }
-    } else if (isSameChannel && pendingImage) {
+    } else if (pendingImage) {
       if (chatContainerRef.current) {
         chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
       }
     }
 
     prevMsgLengthRef.current = messages?.length || 0;
-  }, [messages?.length, pendingImage, channel?.id]);
+  }, [messages?.length, pendingImage]);
 
   // Click outside to close emoji picker
   useEffect(() => {

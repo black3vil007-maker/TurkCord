@@ -28,29 +28,37 @@ export default function ChatArea({
   const messagesEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
 
-  const prevChannelIdRef = useRef(channel?.id);
   const prevMsgLengthRef = useRef(messages?.length || 0);
+  const initialScrollDoneRef = useRef(false);
 
-  // Kanal degistiginde titreme olmaksizin aninda en alta konumlan
+  // Kanal acildiginda veya degistiginde titreme olmaksizin aninda en alta konumlan
   useLayoutEffect(() => {
     if (scrollContainerRef.current) {
       scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+      initialScrollDoneRef.current = true;
     }
     const rafId = requestAnimationFrame(() => {
       if (scrollContainerRef.current) {
         scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+        initialScrollDoneRef.current = true;
       }
     });
-    prevChannelIdRef.current = channel?.id;
     prevMsgLengthRef.current = messages?.length || 0;
     return () => cancelAnimationFrame(rafId);
   }, [channel?.id]);
 
-  // Yeni mesaj geldiginde puruzsuz kaydir
-  useEffect(() => {
-    const isSameChannel = prevChannelIdRef.current === channel?.id;
-    const hasNewMessage = (messages?.length || 0) > prevMsgLengthRef.current;
-    if (isSameChannel && hasNewMessage) {
+  // Mesajlar yuklendiginde veya yeni mesaj geldiginde
+  useLayoutEffect(() => {
+    if (!initialScrollDoneRef.current && (messages?.length || 0) > 0) {
+      if (scrollContainerRef.current) {
+        scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+      }
+      initialScrollDoneRef.current = true;
+      prevMsgLengthRef.current = messages.length;
+      return;
+    }
+
+    if (initialScrollDoneRef.current && (messages?.length || 0) > prevMsgLengthRef.current) {
       if (scrollContainerRef.current) {
         scrollContainerRef.current.scrollTo({
           top: scrollContainerRef.current.scrollHeight,
@@ -59,7 +67,7 @@ export default function ChatArea({
       }
     }
     prevMsgLengthRef.current = messages?.length || 0;
-  }, [messages?.length, channel?.id]);
+  }, [messages?.length]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
