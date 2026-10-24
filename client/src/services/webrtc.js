@@ -55,7 +55,9 @@ class WebRTCManager {
 
     // Per-user volume control (0% to 200%)
     this.peerVolumes = this.loadPeerVolumes();
+    this.peerSourceNodes = {};
     this.peerGainNodes = {};
+    this.peerDestinations = {};
     this.remoteAudioContext = null;
     this.currentUserId = null;
 
@@ -263,15 +265,37 @@ class WebRTCManager {
     return Math.round((peerVol * (outVol / 100)));
   }
 
+  getRemoteAudioContext() {
+    if (!this.remoteAudioContext || this.remoteAudioContext.state === 'closed') {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      this.remoteAudioContext = new AudioCtx({ sampleRate: 48000 });
+    }
+    if (this.remoteAudioContext.state === 'suspended') {
+      this.remoteAudioContext.resume().catch(() => {});
+    }
+    return this.remoteAudioContext;
+  }
+
   updateAllPeerPlayoutVolumes() {
     for (const [peerId, peer] of Object.entries(this.peers)) {
+      const effective = this.getEffectivePeerVolume(peerId);
+      const gainMultiplier = this.isDeafened ? 0 : (effective / 100);
+
+      if (this.peerGainNodes[peerId] && this.remoteAudioContext) {
+        this.peerGainNodes[peerId].gain.setTargetAtTime(
+          gainMultiplier,
+          this.remoteAudioContext.currentTime,
+          0.01
+        );
+      }
+
       if (peer.audioEl) {
-        if (this.isDeafened) {
+        if (this.isDeafened || effective === 0) {
           peer.audioEl.muted = true;
           peer.audioEl.volume = 0;
         } else {
           peer.audioEl.muted = false;
-          peer.audioEl.volume = Math.min(1.0, Math.max(0, this.getEffectivePeerVolume(peerId) / 100));
+          peer.audioEl.volume = this.peerGainNodes[peerId] ? 1.0 : Math.min(1.0, effective / 100);
         }
       }
     }
@@ -315,21 +339,24 @@ class WebRTCManager {
     } catch (e) {}
 
     const effective = this.getEffectivePeerVolume(peerId);
+    const gainMultiplier = this.isDeafened ? 0 : (effective / 100);
 
-    // 1. Web Audio Gain Node (supports up to 200% boost!)
-    if (this.peerGainNodes[peerId]) {
+    // 1. Web Audio Gain Node (Real boost up to 200% / 2.0x!)
+    if (this.peerGainNodes[peerId] && this.remoteAudioContext) {
       this.peerGainNodes[peerId].gain.setTargetAtTime(
-        this.isDeafened ? 0 : (effective / 100),
-        this.remoteAudioContext?.currentTime || 0,
+        gainMultiplier,
+        this.remoteAudioContext.currentTime,
         0.01
       );
     }
 
-    // 2. Native audio element (only unmuted if Web Audio is not handling this peer)
+    // 2. Audio element update (fallback to clamped if GainNode inactive)
     const peer = this.peers[peerId];
     if (peer && peer.audioEl) {
-      const isWebAudioActive = this.remoteAudioContext && this.remoteAudioContext.state === 'running';
-      if (!isWebAudioActive || !this.peerGainNodes[peerId]) {
+      if (this.peerGainNodes[peerId]) {
+        peer.audioEl.volume = (this.isDeafened || effective === 0) ? 0 : 1.0;
+        peer.audioEl.muted = this.isDeafened || effective === 0;
+      } else {
         peer.audioEl.volume = Math.min(1.0, effective / 100);
         peer.audioEl.muted = this.isDeafened || effective === 0;
       }
@@ -369,20 +396,70 @@ class WebRTCManager {
       });
     }
 
-    // 2. Set stream directly to guarantee immediate playback binding
-    audioEl.srcObject = remoteStream;
+    // 2. Setup Web Audio Gain amplification graph (allows genuine boost up to 200% / 300%!)
+    let playoutStream = remoteStream;
+    try {
+      if (remoteStream.getAudioTracks().length > 0) {
+        const ctx = this.getRemoteAudioContext();
+        
+        // If stream instance changed, tear down old nodes
+        if (this.peerSourceNodes[peerId] && this.peerSourceNodes[peerId]._streamId !== remoteStream.id) {
+          try { this.peerSourceNodes[peerId].disconnect(); } catch (e) {}
+          delete this.peerSourceNodes[peerId];
+          if (this.peerGainNodes[peerId]) {
+            try { this.peerGainNodes[peerId].disconnect(); } catch (e) {}
+            delete this.peerGainNodes[peerId];
+          }
+        }
 
-    // 3. Audio volume & unmuted - Never mute unless user is intentionally deafened!
-    const effectiveVol = this.getEffectivePeerVolume(peerId);
-    audioEl.volume = this.isDeafened ? 0 : Math.min(1.0, Math.max(0, effectiveVol / 100));
-    audioEl.muted = Boolean(this.isDeafened);
+        if (!this.peerGainNodes[peerId]) {
+          const source = ctx.createMediaStreamSource(remoteStream);
+          source._streamId = remoteStream.id;
+          const gainNode = ctx.createGain();
+          const destination = ctx.createMediaStreamDestination();
 
-    // 4. Force play
+          source.connect(gainNode);
+          gainNode.connect(destination);
+
+          this.peerSourceNodes[peerId] = source;
+          this.peerGainNodes[peerId] = gainNode;
+          this.peerDestinations[peerId] = destination;
+        }
+
+        const effective = this.getEffectivePeerVolume(peerId);
+        // Supports full dynamic range above 100% (e.g. 150% = 1.5x gain, 200% = 2.0x gain!)
+        const gainValue = this.isDeafened ? 0 : (effective / 100);
+        this.peerGainNodes[peerId].gain.setTargetAtTime(gainValue, ctx.currentTime, 0.01);
+
+        playoutStream = this.peerDestinations[peerId].stream;
+      }
+    } catch (graphErr) {
+      console.warn('[WebRTC] Web Audio amplification setup error, fallback to raw stream:', graphErr);
+      playoutStream = remoteStream;
+    }
+
+    // 3. Set stream to audio element
+    if (audioEl.srcObject !== playoutStream) {
+      audioEl.srcObject = playoutStream;
+    }
+
+    // 4. Audio element volume: when GainNode is active, audioEl stays at 1.0 (unclamped gain handles amplification)
+    if (this.peerGainNodes[peerId]) {
+      audioEl.volume = this.isDeafened ? 0 : 1.0;
+      audioEl.muted = Boolean(this.isDeafened);
+    } else {
+      const effectiveVol = this.getEffectivePeerVolume(peerId);
+      audioEl.volume = this.isDeafened ? 0 : Math.min(1.0, Math.max(0, effectiveVol / 100));
+      audioEl.muted = Boolean(this.isDeafened);
+    }
+
+    // 5. Force play
     const playPromise = audioEl.play();
     if (playPromise !== undefined) {
       playPromise.catch(e => {
         console.warn(`[WebRTC] audioEl autoplay waiting for user interaction for ${peerId}:`, e);
         const unlock = () => {
+          this.resumeAudioContexts();
           audioEl.play().catch(() => {});
           window.removeEventListener('click', unlock);
           window.removeEventListener('keydown', unlock);
@@ -433,11 +510,11 @@ class WebRTCManager {
 
     // Live update Web Audio filter & gate
     if (this.highpassFilter && this.audioContext && this.audioContext.state !== 'closed') {
-      const hpFreq = this.audioSettings.keyboardFilterEnabled !== false ? 120 : 80;
+      const hpFreq = this.audioSettings.keyboardFilterEnabled !== false ? 90 : 80;
       this.highpassFilter.frequency.setTargetAtTime(hpFreq, this.audioContext.currentTime, 0.01);
     }
     if (this.keyboardFilterShelf && this.audioContext && this.audioContext.state !== 'closed') {
-      const shelfGain = this.audioSettings.keyboardFilterEnabled !== false ? -18 : 0;
+      const shelfGain = this.audioSettings.keyboardFilterEnabled !== false ? -4 : 0;
       this.keyboardFilterShelf.gain.setTargetAtTime(shelfGain, this.audioContext.currentTime, 0.01);
     }
     if (this.gateGainNode && this.audioContext && this.audioContext.state !== 'closed') {
@@ -612,18 +689,18 @@ class WebRTCManager {
           }
           this.micSourceNode = this.audioContext.createMediaStreamSource(this.rawStream);
 
-          // 2. High-Pass Filter: Cuts mechanical keyboard desk vibrations (< 120Hz)
+          // 2. High-Pass Filter: Cuts mechanical keyboard desk vibrations (< 90Hz)
           this.highpassFilter = this.audioContext.createBiquadFilter();
           this.highpassFilter.type = 'highpass';
-          this.highpassFilter.frequency.value = this.audioSettings.keyboardFilterEnabled !== false ? 120 : 80;
+          this.highpassFilter.frequency.value = this.audioSettings.keyboardFilterEnabled !== false ? 90 : 80;
           this.highpassFilter.Q.value = 0.707;
           this.micSourceNode.connect(this.highpassFilter);
 
-          // 3. Mechanical Switch Click Attenuation (cuts sharp 3.8kHz switch clatter)
+          // 3. Mechanical Switch Click Attenuation (gentle -4dB cut at 4.5kHz, preserving voice warmth & clarity)
           this.keyboardFilterShelf = this.audioContext.createBiquadFilter();
           this.keyboardFilterShelf.type = 'highshelf';
-          this.keyboardFilterShelf.frequency.value = 3800;
-          this.keyboardFilterShelf.gain.value = this.audioSettings.keyboardFilterEnabled !== false ? -18 : 0;
+          this.keyboardFilterShelf.frequency.value = 4500;
+          this.keyboardFilterShelf.gain.value = this.audioSettings.keyboardFilterEnabled !== false ? -4 : 0;
           this.highpassFilter.connect(this.keyboardFilterShelf);
 
           // 4. Analyser for Real-time Voice Formants Detection (measures post-denoise signal)
@@ -643,18 +720,23 @@ class WebRTCManager {
           this.gateGainNode.gain.value = this.audioSettings.voiceGateEnabled ? 0 : 1.0;
           this.micGainNode.connect(this.gateGainNode);
 
-          // 7. Studio Peak Limiter / Dynamics Compressor (prevents ear-piercing clipping & shouting)
+          // 7. Studio Peak Limiter (only clamps excessive shouting > -4dB, leaves normal voice 100% full & rich)
           this.compressor = this.audioContext.createDynamicsCompressor();
-          this.compressor.threshold.value = -12;
-          this.compressor.knee.value = 8;
-          this.compressor.ratio.value = 6;
+          this.compressor.threshold.value = -4;
+          this.compressor.knee.value = 10;
+          this.compressor.ratio.value = 4;
           this.compressor.attack.value = 0.003;
           this.compressor.release.value = 0.15;
           this.gateGainNode.connect(this.compressor);
 
-          // 8. Destination Stream to send to WebRTC peer connections
+          // 8. Makeup Gain (+3.5 dB / 1.5x) for strong, audible broadcast-quality voice
+          this.postGainNode = this.audioContext.createGain();
+          this.postGainNode.gain.value = 1.5;
+          this.compressor.connect(this.postGainNode);
+
+          // 9. Destination Stream to send to WebRTC peer connections
           this.audioDestination = this.audioContext.createMediaStreamDestination();
-          this.compressor.connect(this.audioDestination);
+          this.postGainNode.connect(this.audioDestination);
 
           // 9. Asynchronously activate RNNoise AI Denoise if enabled
           if (this.audioSettings.aiDenoise !== false) {
@@ -699,7 +781,7 @@ class WebRTCManager {
     const opusMatch = sdp.match(/a=rtpmap:(\d+)\s+opus\/48000/i);
     if (opusMatch) {
       const opusPayload = opusMatch[1];
-      const gamingParams = 'maxaveragebitrate=64000;useinbandfec=1;usedtx=0';
+      const gamingParams = 'maxaveragebitrate=96000;useinbandfec=1;usedtx=0';
 
       const fmtpRegex = new RegExp(`a=fmtp:${opusPayload}\\s+(.*)`, 'i');
       if (fmtpRegex.test(sdp)) {
@@ -1446,9 +1528,16 @@ class WebRTCManager {
 
   // Close specific peer
   closePeer(peerId) {
+    if (this.peerSourceNodes[peerId]) {
+      try { this.peerSourceNodes[peerId].disconnect(); } catch (e) {}
+      delete this.peerSourceNodes[peerId];
+    }
     if (this.peerGainNodes[peerId]) {
       try { this.peerGainNodes[peerId].disconnect(); } catch (e) {}
       delete this.peerGainNodes[peerId];
+    }
+    if (this.peerDestinations[peerId]) {
+      delete this.peerDestinations[peerId];
     }
     delete this.pendingIceCandidates[peerId];
 
@@ -1478,10 +1567,16 @@ class WebRTCManager {
       this.closePeer(peerId);
     }
 
+    for (const sourceNode of Object.values(this.peerSourceNodes)) {
+      try { sourceNode.disconnect(); } catch (e) {}
+    }
+    this.peerSourceNodes = {};
+
     for (const gainNode of Object.values(this.peerGainNodes)) {
       try { gainNode.disconnect(); } catch (e) {}
     }
     this.peerGainNodes = {};
+    this.peerDestinations = {};
 
     if (!keepLocalAudio) {
       if (this.remoteAudioContext && this.remoteAudioContext.state !== 'closed') {
