@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="./icon.svg" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
+    <link rel="manifest" href="./manifest.json" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#4f46e5" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="TurkCord" />
+    <meta name="description" content="TurkCord - eSports Düşük Gecikmeli P2P Ses & Ekran Paylaşımı Masaüstü ve Web Uygulaması" />
+    <title>TurkCord | Gaming Ses & Sohbet</title>
+    <script type="module" crossorigin src="./assets/index-DAi385UH.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-CwrRnI97.css">
+  </head>
+  <body class="bg-[#0d1117] text-[#e6edf3] overflow-hidden select-none" oncontextmenu="return false;">
+    <div id="root"></div>
+    <script>
+      // If running on localhost / development, unregister any active Service Workers so they never intercept Vite dev server
+      if ('serviceWorker' in navigator) {
+        if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+          navigator.serviceWorker.getRegistrations().then((registrations) => {
+            for (let registration of registrations) {
+              registration.unregister();
+              console.log('[Dev] Unregistered active Service Worker on localhost');
+            }
+          });
+          if ('caches' in window) {
+            caches.keys().then((names) => {
+              for (let name of names) caches.delete(name);
+            });
+          }
+        } else {
+          // Register Service Worker for PWA Desktop Installability in production
+          window.addEventListener('load', () => {
+            navigator.serviceWorker.register('/sw.js').then((reg) => {
+              try { reg.update(); } catch (e) {}
+              reg.onupdatefound = () => {
+                const installingWorker = reg.installing;
+                if (installingWorker) {
+                  installingWorker.onstatechange = () => {
+                    if (installingWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                      window.location.reload();
+                    }
+                  };
+                }
+              };
+            }).catch(() => {});
+          });
+        }
+      }
+    </script>
+  </body>
+</html>
