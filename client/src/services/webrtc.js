@@ -854,10 +854,11 @@ class WebRTCManager {
     }
 
     const existingPeer = this.peers[peerId];
-    if (existingPeer) {
+    if (existingPeer && existingPeer.connection) {
       const existingPc = existingPeer.connection;
-      const state = existingPc?.connectionState;
-      if (existingPc && (state === 'connected' || state === 'connecting')) {
+      const state = existingPc.connectionState;
+      // Do NOT close connections that are 'new', 'connecting', or 'connected'!
+      if (!['closed', 'failed'].includes(state)) {
         if (isInitiator && existingPc.signalingState === 'stable') {
           try {
             const offer = await existingPc.createOffer({
@@ -893,7 +894,8 @@ class WebRTCManager {
       audioEl.style.display = 'none';
       document.body.appendChild(audioEl);
     }
-    audioEl.muted = this.isDeafened;
+    audioEl.muted = Boolean(this.isDeafened);
+    audioEl.volume = this.isDeafened ? 0 : Math.min(1.0, Math.max(0, this.getEffectivePeerVolume(peerId) / 100));
     audioEl.srcObject = remoteStream;
     if (this.selectedOutputDeviceId && this.selectedOutputDeviceId !== 'default' && typeof audioEl.setSinkId === 'function') {
       audioEl.setSinkId(this.selectedOutputDeviceId).catch(() => {});

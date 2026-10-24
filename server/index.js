@@ -25,6 +25,14 @@ const io = new Server(server, {
 // Users: { [socketId]: { id, username, avatar, currentVoiceRoom, isMuted, isDeafened, isScreenSharing } }
 const users = {};
 
+// Helper: Resolve a peer's active socketId by either their userId or socketId
+function resolveTargetSocketId(targetId) {
+  if (!targetId) return null;
+  if (users[targetId]) return targetId;
+  const found = Object.values(users).find(u => u.id === targetId || u.socketId === targetId);
+  return found ? found.socketId : null;
+}
+
 // Channels config
 const channels = {
   text: [
@@ -490,13 +498,6 @@ io.on('connection', (socket) => {
     user.currentVoiceRoom = roomId;
 
     socket.join(roomId);
-
-    function resolveTargetSocketId(targetId) {
-      if (!targetId) return null;
-      if (users[targetId]) return targetId;
-      const found = Object.values(users).find(u => u.id === targetId || u.socketId === targetId);
-      return found ? found.socketId : null;
-    }
 
     // 5. Send peers and broadcast updates
     socket.emit('voice:peers', {
